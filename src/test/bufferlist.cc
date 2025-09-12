@@ -27,6 +27,7 @@
 #include <iostream> // for std::cout
 
 #include "include/buffer.h"
+#include "include/buffer_fd.h"
 #include "include/buffer_raw.h"
 #include "include/compat.h"
 #include "include/utime.h"
@@ -3083,6 +3084,17 @@ TEST(BufferList, DanglingLastP) {
   // Otherwise `bl::copy_in` will call `seek()` and refresh `last_p`.
   bl.begin(2).copy_in(1, "C");
   EXPECT_EQ(0, ::memcmp("12C", bl.c_str(), 3));
+}
+
+TEST(BufferList, size) {
+ buffer::list bl;
+ EXPECT_EQ(bl.size(), bl.length());
+
+ bl.append("12345"); 
+ EXPECT_EQ(bl.size(), bl.length());
+
+ bl.clear();
+ EXPECT_EQ(bl.size(), bl.length());
 }
 
 TEST(BufferHash, all) {
