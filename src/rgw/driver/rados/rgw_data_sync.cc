@@ -26,6 +26,7 @@
 #include "rgw_sync_counters.h"
 #include "rgw_sync_error_repo.h"
 #include "rgw_sync_module.h"
+#include "rgw_sync_observability.h"
 #include "rgw_sal.h"
 
 #include "cls/lock/cls_lock_client.h"
@@ -1433,12 +1434,15 @@ class RGWDataSyncSingleEntryCR : public RGWCoroutine {
   rgw_raw_obj error_repo;
   boost::intrusive_ptr<const RGWContinuousLeaseCR> lease_cr;
   RGWSyncTraceNodeRef tn;
+  std::string sync_type;
 
   ceph::real_time progress;
+  ceph::coarse_mono_time sync_start;
   int sync_status = 0;
 public:
   RGWDataSyncSingleEntryCR(RGWDataSyncCtx *_sc, rgw::bucket_sync::Handle state,
                            rgw_data_sync_obligation _obligation,
+                           std::string_view _sync_type,
                            RGWDataSyncShardMarkerTrack *_marker_tracker,
                            const rgw_raw_obj& error_repo,
                            boost::intrusive_ptr<const RGWContinuousLeaseCR> lease_cr,
@@ -1446,7 +1450,7 @@ public:
     : RGWCoroutine(_sc->cct), sc(_sc), sync_env(_sc->env),
       state(std::move(state)), obligation(std::move(_obligation)),
       marker_tracker(_marker_tracker), error_repo(error_repo),
-      lease_cr(std::move(lease_cr)) {
+      lease_cr(std::move(lease_cr)), sync_type(_sync_type) {
     set_description() << "data sync single entry (source_zone=" << sc->source_zone << ") " << obligation;
     tn = sync_env->sync_tracer->add_node(_tn_parent, "entry", to_string(obligation.bs, obligation.gen));
   }
@@ -1483,10 +1487,23 @@ public:
           ldout(cct, 4) << "starting sync on " << bucket_shard_str{state->key.first}
               << ' ' << *state->obligation << " progress timestamp " << state->progress_timestamp
               << " progress " << progress << dendl;
+          sync_start = ceph::coarse_mono_clock::now();
           yield call(new RGWRunBucketSourcesSyncCR(sc, lease_cr,
                                                    state->key.first, tn,
                                                    state->obligation->gen,
 						   &progress));
+          {
+            rgw::sync_observability::Event event;
+            event.metric = "entries";
+            event.sync_type = sync_type;
+            event.phase = "bilog_entry";
+            event.result = rgw::sync_observability::result_label(retcode);
+            event.error = rgw::sync_observability::error_label(retcode);
+            event.duration_seconds = std::chrono::duration<double>(
+              ceph::coarse_mono_clock::now() - sync_start).count();
+            rgw::sync_observability::add_debug_bucket(&event, cct, state->key.first);
+            rgw::sync_observability::emit(dpp, sc, std::move(event));
+          }
           if (retcode < 0) {
             break;
           }
@@ -1524,6 +1541,16 @@ public:
           yield call(rgw::error_repo::write_cr(sync_env->driver->getRados()->get_rados_handle(), error_repo,
                                               rgw::error_repo::encode_key(complete->bs, complete->gen),
                                               complete->timestamp));
+          {
+            rgw::sync_observability::Event event;
+            event.metric = "errors";
+            event.sync_type = sync_type;
+            event.phase = "error_repo";
+            event.result = rgw::sync_observability::result_label(retcode);
+            event.error = rgw::sync_observability::error_label(retcode);
+            rgw::sync_observability::add_debug_bucket(&event, cct, complete->bs);
+            rgw::sync_observability::emit(dpp, sc, std::move(event));
+          }
           if (retcode < 0) {
             tn->log(0, SSTR("ERROR: failed to log sync failure in error repo: retcode=" << retcode));
           }
@@ -1532,6 +1559,16 @@ public:
         yield call(rgw::error_repo::remove_cr(sync_env->driver->getRados()->get_rados_handle(), error_repo,
                                               rgw::error_repo::encode_key(complete->bs, complete->gen),
                                               complete->timestamp));
+        {
+          rgw::sync_observability::Event event;
+          event.metric = "retries";
+          event.sync_type = sync_type;
+          event.phase = "retry_repo";
+          event.result = rgw::sync_observability::result_label(retcode);
+          event.error = rgw::sync_observability::error_label(retcode);
+          rgw::sync_observability::add_debug_bucket(&event, cct, complete->bs);
+          rgw::sync_observability::emit(dpp, sc, std::move(event));
+        }
         if (retcode < 0) {
           tn->log(0, SSTR("ERROR: failed to remove omap key from error repo ("
              << error_repo << " retcode=" << retcode));
@@ -1644,11 +1681,12 @@ RGWCoroutine* data_sync_single_entry(RGWDataSyncCtx *sc, const rgw_bucket_shard&
                                 RGWDataSyncShardMarkerTrack* marker_tracker,
                                 rgw_raw_obj error_repo,
                                 RGWSyncTraceNodeRef& tn,
+                                std::string_view sync_type,
                                 bool retry) {
   auto state = bucket_shard_cache->get(src, gen);
   auto obligation = rgw_data_sync_obligation{src, gen, marker, timestamp, retry};
   return new RGWDataSyncSingleEntryCR(sc, std::move(state), std::move(obligation),
-                                      &*marker_tracker, error_repo,
+                                      sync_type, marker_tracker, error_repo,
                                       lease_cr.get(), tn);
 }
 
@@ -1683,6 +1721,8 @@ class RGWDataFullSyncSingleEntryCR : public RGWCoroutine {
   RGWCoroutine* shard_cr = nullptr;
   bool first_shard = true;
   bool error_inject;
+  bool remote_started = false;
+  ceph::coarse_mono_time remote_start;
 
 public:
   RGWDataFullSyncSingleEntryCR(RGWDataSyncCtx *_sc, const rgw_pool& _pool, const rgw_bucket_shard& _source_bs,
@@ -1706,7 +1746,24 @@ public:
         retcode = -ENOENT;
       } else {
         tn->log(0, SSTR("read bilog info key=" << key));
+        remote_started = true;
+        remote_start = ceph::coarse_mono_clock::now();
         yield call(new RGWReadRemoteBucketIndexLogInfoCR(sc, source_bs.bucket, &remote_info));
+      }
+      {
+        rgw::sync_observability::Event event;
+        event.metric = "remote_requests";
+        event.sync_type = "full";
+        event.phase = "bilog_list";
+        event.remote_op = "bilog_list";
+        event.result = rgw::sync_observability::result_label(retcode);
+        event.error = rgw::sync_observability::error_label(retcode);
+        if (remote_started) {
+          event.duration_seconds = std::chrono::duration<double>(
+            ceph::coarse_mono_clock::now() - remote_start).count();
+        }
+        rgw::sync_observability::add_debug_bucket(&event, cct, source_bs);
+        rgw::sync_observability::emit(dpp, sc, std::move(event));
       }
 
       if (retcode < 0) {
@@ -1739,7 +1796,7 @@ public:
 		timestamp), sc->lcc.adj_concurrency(cct->_conf->rgw_data_sync_spawn_window), std::nullopt);
           } else {
           shard_cr = data_sync_single_entry(sc, source_bs, each->gen, key, timestamp,
-                      lease_cr, bucket_shard_cache, nullptr, error_repo, tn, false);
+                      lease_cr, bucket_shard_cache, nullptr, error_repo, tn, "full", false);
           tn->log(10, SSTR("full sync: syncing shard_id " << sid << " of gen " << each->gen));
           if (first_shard) {
             first_shard = false;
@@ -1969,6 +2026,7 @@ class RGWDataIncSyncShardCR : public RGWDataBaseSyncShardCR {
   vector<rgw_data_change_log_entry> log_entries;
   real_time last_update;
   decltype(log_entries)::iterator log_iter;
+  ceph::coarse_mono_time remote_start;
   bool truncated = false;
   int cbret = 0;
   bool lost_lock = false;
@@ -2052,7 +2110,7 @@ public:
           spawn(data_sync_single_entry(sc, source_bs, modified_iter->gen, {},
 				       ceph::real_time{}, lease_cr,
 				       bucket_shard_cache, &*marker_tracker,
-				       error_repo, tn, false), false);
+				       error_repo, tn, "incremental", false), false);
 	}
 
         if (error_retry_time <= ceph::coarse_real_clock::now()) {
@@ -2098,7 +2156,7 @@ public:
               spawn(data_sync_single_entry(sc, source_bs, gen, "",
 					   entry_timestamp, lease_cr,
 					   bucket_shard_cache, &*marker_tracker,
-					   error_repo, tn, true), false);
+					   error_repo, tn, "incremental", true), false);
             }
           }
           if (!omapvals->more) {
@@ -2111,10 +2169,36 @@ public:
 
         tn->log(20, SSTR("shard_id=" << shard_id << " sync_marker="
 			 << sync_marker.marker));
+        remote_start = ceph::coarse_mono_clock::now();
         yield call(new RGWReadRemoteDataLogShardCR(sc, shard_id,
 						   sync_marker.marker,
                                                    &next_marker, &log_entries,
 						   &truncated, &last_update));
+        {
+          rgw::sync_observability::Event event;
+          event.metric = "remote_requests";
+          event.sync_type = "incremental";
+          event.phase = "bilog_list";
+          event.remote_op = "datalog_list";
+          event.result = rgw::sync_observability::result_label(retcode);
+          event.error = rgw::sync_observability::error_label(retcode);
+          event.shard = shard_id;
+          event.duration_seconds = std::chrono::duration<double>(
+            ceph::coarse_mono_clock::now() - remote_start).count();
+          rgw::sync_observability::emit(dpp, sc, std::move(event));
+        }
+        if (sync_marker.timestamp != ceph::real_time{}) {
+          rgw::sync_observability::Event event;
+          event.metric = "shard_marker_lag";
+          event.sync_type = "incremental";
+          event.phase = "marker";
+          event.result = rgw::sync_observability::result_label(retcode);
+          event.error = rgw::sync_observability::error_label(retcode);
+          event.shard = shard_id;
+          event.value = std::chrono::duration<double>(
+            ceph::real_clock::now() - sync_marker.timestamp).count();
+          rgw::sync_observability::emit(dpp, sc, std::move(event));
+        }
         if (retcode < 0 && retcode != -ENOENT) {
           tn->log(0, SSTR("ERROR: failed to read remote data log info: ret="
 			  << retcode));
@@ -2152,7 +2236,7 @@ public:
             tn->log(1, SSTR("incremental sync on " << log_iter->entry.key  << "shard: " << shard_id << "on gen " << log_iter->entry.gen));
             yield_spawn_window(data_sync_single_entry(sc, source_bs, log_iter->entry.gen, log_iter->log_id,
                                                  log_iter->log_timestamp, lease_cr,bucket_shard_cache,
-                                                 &*marker_tracker, error_repo, tn, false),
+                                                 &*marker_tracker, error_repo, tn, "incremental", false),
                                sc->lcc.adj_concurrency(cct->_conf->rgw_data_sync_spawn_window),
                                [&](uint64_t stack_id, int ret) {
                                  if (ret < 0) {
@@ -2256,6 +2340,15 @@ public:
 
       if (!sc->env->bid_manager->is_highest_bidder(shard_id)) {
         tn->log(10, "not the highest bidder");
+        {
+          rgw::sync_observability::Event event;
+          event.metric = "lease";
+          event.phase = "lease";
+          event.result = "retry";
+          event.error = "ebusy";
+          event.shard = shard_id;
+          rgw::sync_observability::emit(dpp, sc, std::move(event));
+        }
         return set_cr_error(-EBUSY);
       }
 
@@ -2265,13 +2358,32 @@ public:
           tn->log(5, "failed to take lease");
           set_status("lease lock failed, early abort");
           drain_all();
-          return set_cr_error(lease_cr->get_ret_status());
+          {
+            const auto ret = lease_cr->get_ret_status();
+            rgw::sync_observability::Event event;
+            event.metric = "lease";
+            event.phase = "lease";
+            event.result = rgw::sync_observability::result_label(ret);
+            event.error = rgw::sync_observability::error_label(ret);
+            event.shard = shard_id;
+            rgw::sync_observability::emit(dpp, sc, std::move(event));
+            return set_cr_error(ret);
+          }
         }
         set_sleeping(true);
         yield;
       }
       *reset_backoff = true;
       tn->log(10, "took lease");
+      {
+        rgw::sync_observability::Event event;
+        event.metric = "lease";
+        event.phase = "lease";
+        event.result = "success";
+        event.error = "none";
+        event.shard = shard_id;
+        rgw::sync_observability::emit(dpp, sc, std::move(event));
+      }
       /* Reread data sync status to fetch latest marker and objv */
       objv.clear();
       yield call(new RGWSimpleRadosReadCR<rgw_data_sync_marker>(sync_env->dpp, sync_env->driver,
@@ -2904,6 +3016,7 @@ class RGWObjFetchCR : public RGWCoroutine {
   int try_num{0};
   std::shared_ptr<bool> need_retry;
   bool replicate_tags{true};
+  ceph::coarse_mono_time remote_start;
 public:
   RGWObjFetchCR(RGWDataSyncCtx *_sc,
                 rgw_bucket_sync_pipe& _sync_pipe,
@@ -2952,6 +3065,7 @@ public:
            * we need to fetch info about source object, so that we can determine
            * the correct policy configuration. This can happen if there are multiple
            * policy rules, and some depend on the object tagging */
+          remote_start = ceph::coarse_mono_clock::now();
           yield call(new RGWStatRemoteObjCR(sync_env->async_rados,
                                             sync_env->driver,
                                             sc->source_zone,
@@ -2962,6 +3076,19 @@ public:
                                             nullptr,
                                             &src_attrs,
                                             nullptr));
+          {
+            rgw::sync_observability::Event event;
+            event.metric = "remote_requests";
+            event.sync_type = "unknown";
+            event.phase = "object_stat";
+            event.remote_op = "object_stat";
+            event.result = rgw::sync_observability::result_label(retcode);
+            event.error = rgw::sync_observability::error_label(retcode);
+            event.duration_seconds = std::chrono::duration<double>(
+              ceph::coarse_mono_clock::now() - remote_start).count();
+            rgw::sync_observability::add_debug_bucket(&event, cct, sync_pipe.info.source_bs);
+            rgw::sync_observability::emit(dpp, sc, std::move(event));
+          }
           if (retcode < 0) {
             return set_cr_error(retcode);
           }
@@ -3032,6 +3159,7 @@ public:
                                                             std::move(dest_params),
                                                             need_retry);
 
+          remote_start = ceph::coarse_mono_clock::now();
           call(new RGWFetchRemoteObjCR(sync_env->async_rados, sync_env->driver, sc->source_zone,
                                        param_user,
                                        sync_pipe.source_bucket_info.bucket,
@@ -3042,6 +3170,19 @@ public:
                                        stat_follow_olh,
                                        source_trace_entry, zones_trace,
                                        sync_env->counters, dpp, replicate_tags));
+        }
+        {
+          rgw::sync_observability::Event event;
+          event.metric = "remote_requests";
+          event.sync_type = "unknown";
+          event.phase = "object_fetch";
+          event.remote_op = "object_fetch";
+          event.result = rgw::sync_observability::result_label(retcode);
+          event.error = rgw::sync_observability::error_label(retcode);
+          event.duration_seconds = std::chrono::duration<double>(
+            ceph::coarse_mono_clock::now() - remote_start).count();
+          rgw::sync_observability::add_debug_bucket(&event, cct, sync_pipe.info.source_bs);
+          rgw::sync_observability::emit(dpp, sc, std::move(event));
         }
         if (retcode < 0) {
           if (*need_retry) {

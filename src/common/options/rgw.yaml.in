@@ -2699,6 +2699,56 @@ options:
   services:
   - rgw
   with_legacy: true
+- name: rgw_sync_debug_observability
+  type: bool
+  level: dev
+  desc: Enable RGW multisite sync debug observability events.
+  long_desc: When enabled, RGW emits structured multisite sync events to the
+    Unix datagram socket configured by rgw_sync_debug_prometheus_socket. The
+    matching exporter translates those events into Prometheus metrics with a
+    bounded label set.
+  default: false
+  services:
+  - rgw
+  see_also:
+  - rgw_sync_debug_prometheus_socket
+  with_legacy: true
+- name: rgw_sync_debug_prometheus_socket
+  type: str
+  level: dev
+  desc: Unix datagram socket path for RGW sync debug observability events.
+  default: '""'
+  services:
+  - rgw
+  see_also:
+  - rgw_sync_debug_observability
+  with_legacy: true
+- name: rgw_sync_debug_bucket_allowlist
+  type: str
+  level: dev
+  desc: Comma-separated bucket names allowed to use bucket and shard debug labels.
+  long_desc: Bucket and shard labels can create high Prometheus cardinality.
+    Leave this empty by default and only set it for incident canaries or known
+    buckets under investigation.
+  default: '""'
+  services:
+  - rgw
+  see_also:
+  - rgw_sync_debug_observability
+  with_legacy: true
+- name: rgw_sync_debug_log_object_key_hash
+  type: bool
+  level: dev
+  desc: Enable short object key hashes in sync debug logs.
+  long_desc: Full object keys must not be emitted as Prometheus labels. This
+    option is reserved for deeper log-only debugging where a short hash is
+    enough to correlate events without exposing the object key.
+  default: false
+  services:
+  - rgw
+  see_also:
+  - rgw_sync_debug_observability
+  with_legacy: true
 - name: rgw_period_push_interval
   type: float
   level: advanced
