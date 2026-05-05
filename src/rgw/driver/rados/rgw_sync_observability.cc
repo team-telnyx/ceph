@@ -241,6 +241,7 @@ void emit(const DoutPrefixProvider *dpp, RGWDataSyncCtx *sc, Event event)
 
   std::ostringstream payload;
   bool first = true;
+  payload << '{';
   append_json_field(payload, "event", "rgw_sync", &first);
   append_json_field(payload, "metric", event.metric, &first);
   append_json_field(payload, "realm", sc->env->svc->zone->get_realm().get_name(), &first);
@@ -271,7 +272,7 @@ void emit(const DoutPrefixProvider *dpp, RGWDataSyncCtx *sc, Event event)
     append_json_number(payload, "value", *event.value, &first);
   }
 
-  payload << '\n';
+  payload << "}\n";
   send_datagram(dpp, sc->cct, payload.str());
 }
 

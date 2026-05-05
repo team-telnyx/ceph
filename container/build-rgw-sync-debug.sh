@@ -3,7 +3,7 @@ set -euo pipefail
 
 git config --global --add safe.directory /ceph
 
-build_dir="${BUILD_DIR:-build}"
+export BUILD_DIR="${BUILD_DIR:-build.rgw-sync}"
 
 ./do_cmake.sh \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -11,4 +11,4 @@ build_dir="${BUILD_DIR:-build}"
   -DWITH_MGR_DASHBOARD_FRONTEND=OFF \
   -DWITH_SYSTEMD=OFF
 
-ninja -C "${build_dir}" radosgw
+ninja -C "${BUILD_DIR}" radosgw
