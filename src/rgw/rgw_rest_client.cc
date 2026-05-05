@@ -917,7 +917,9 @@ int RGWRESTStreamRWRequest::send(RGWHTTPManager *mgr)
   if (sign_key) {
     int r = headers_gen->sign(this, *sign_key, outblp);
     if (r < 0) {
-      ldpp_dout(this, 0) << "ERROR: failed to sign request" << dendl;
+      ldpp_dout(this, 0) << "ERROR: " << __func__
+                         << " stage=sign request=" << to_str()
+                         << " ret=" << r << dendl;
       return r;
     }
   }
@@ -926,7 +928,13 @@ int RGWRESTStreamRWRequest::send(RGWHTTPManager *mgr)
     headers.emplace_back(kv);
   }
 
-  return RGWHTTPStreamRWRequest::send(mgr);
+  int r = RGWHTTPStreamRWRequest::send(mgr);
+  if (r < 0) {
+    ldpp_dout(this, 0) << "ERROR: " << __func__
+                       << " stage=http_send request=" << to_str()
+                       << " ret=" << r << dendl;
+  }
+  return r;
 }
 
 int RGWHTTPStreamRWRequest::complete_request(const DoutPrefixProvider* dpp,

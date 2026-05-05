@@ -946,6 +946,9 @@ int RGWHTTPManager::add_request(RGWHTTPClient *client)
 
   int ret = client->init_request(req_data);
   if (ret < 0) {
+    ldout(cct, 0) << "ERROR: " << __func__
+                  << " stage=init_request request=" << client->to_str()
+                  << " ret=" << ret << dendl;
     req_data->put();
     req_data = NULL;
     return ret;
@@ -961,6 +964,9 @@ int RGWHTTPManager::add_request(RGWHTTPClient *client)
   if (!is_started) {
     ret = link_request(req_data);
     if (ret < 0) {
+      ldout(cct, 0) << "ERROR: " << __func__
+                    << " stage=link_request request=" << client->to_str()
+                    << " ret=" << ret << dendl;
       req_data->put();
       req_data = NULL;
     }
@@ -968,6 +974,9 @@ int RGWHTTPManager::add_request(RGWHTTPClient *client)
   }
   ret = signal_thread();
   if (ret < 0) {
+    ldout(cct, 0) << "ERROR: " << __func__
+                  << " stage=signal_thread request=" << client->to_str()
+                  << " ret=" << ret << dendl;
     finish_request(req_data, ret);
   }
 
@@ -1236,4 +1245,3 @@ int RGWHTTP::process(const DoutPrefixProvider* dpp, RGWHTTPClient *req, optional
 
   return req->wait(dpp, y);
 }
-

@@ -217,8 +217,12 @@ int RGWRESTConn::put_obj_send_init(const rgw_obj& obj, const rgw_http_param_pair
 {
   string url;
   int ret = get_url(url);
-  if (ret < 0)
+  if (ret < 0) {
+    ldout(cct, 0) << "ERROR: " << __func__
+                  << " stage=get_url remote_id=" << remote_id
+                  << " ret=" << ret << dendl;
     return ret;
+  }
 
   param_vec_t params;
   populate_params(params, nullptr, self_zone_group);
@@ -322,8 +326,13 @@ int RGWRESTConn::get_obj(const DoutPrefixProvider *dpp, const rgw_obj& obj, cons
 {
   string url;
   int ret = get_url(url);
-  if (ret < 0)
+  if (ret < 0) {
+    ldpp_dout(dpp, 0) << "ERROR: " << __func__
+                       << " stage=get_url remote_id=" << remote_id
+                       << " obj=" << obj
+                       << " ret=" << ret << dendl;
     return ret;
+  }
 
   param_vec_t params;
   populate_params(params, in_params.uid, self_zone_group);
@@ -392,6 +401,11 @@ int RGWRESTConn::get_obj(const DoutPrefixProvider *dpp, const rgw_obj& obj, cons
   // coverity[uninit_use_in_call:SUPPRESS]
   int r = (*req)->send_prepare(dpp, key, extra_headers, obj);
   if (r < 0) {
+    ldpp_dout(dpp, 0) << "ERROR: " << __func__
+                       << " stage=send_prepare remote_id=" << remote_id
+                       << " endpoint=" << url
+                       << " obj=" << obj
+                       << " ret=" << r << dendl;
     goto done_err;
   }
   
@@ -401,6 +415,11 @@ int RGWRESTConn::get_obj(const DoutPrefixProvider *dpp, const rgw_obj& obj, cons
 
   r = (*req)->send(nullptr);
   if (r < 0) {
+    ldpp_dout(dpp, 0) << "ERROR: " << __func__
+                       << " stage=send remote_id=" << remote_id
+                       << " request=" << (*req)->to_str()
+                       << " obj=" << obj
+                       << " ret=" << r << dendl;
     goto done_err;
   }
   return 0;
