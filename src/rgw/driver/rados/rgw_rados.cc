@@ -4431,6 +4431,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   obj_time_weight set_mtime_weight;
   set_mtime_weight.high_precision = high_precision_time;
   int ret;
+  const char *fetch_stage = "start";
   const string fetched_obj = fmt::format(
     "object(src={}:{}, dest={}:{})", src_obj.bucket.bucket_id, src_obj.key.name,
     dest_obj.bucket.bucket_id, dest_obj.key.name
@@ -4555,6 +4556,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
 
   if (copy_if_newer) {
     /* need to get mtime for destination */
+    fetch_stage = "dest_state";
     ret = get_obj_state(rctx.dpp, &dest_obj_ctx, dest_bucket_info, stat_dest_obj, &dest_state, &manifest, stat_follow_olh, rctx.y);
     if (ret < 0)
       goto set_err_state;
@@ -4574,6 +4576,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
 
   static constexpr int NUM_ENPOINT_IOERROR_RETRIES = 20;
   for (int tries = 0; tries < NUM_ENPOINT_IOERROR_RETRIES; tries++) {
+    fetch_stage = "remote_get_send";
     ret = conn->get_obj(rctx.dpp, user_id, perm_check_uid, info, src_obj, pmod, unmod_ptr,
                         dest_mtime_weight.zone_short_id, dest_mtime_weight.pg_ver, prepend_meta, get_op, rgwx_stat,
                         sync_manifest, skip_decrypt, &dst_zone_trace,
@@ -4583,6 +4586,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
       goto set_err_state;
     }
 
+    fetch_stage = "remote_get_complete";
     ret = conn->complete_request(rctx.dpp, in_stream_req, &etag, &set_mtime,
                                  &accounted_size, nullptr, nullptr, rctx.y);
     if (ret < 0) {
@@ -4595,11 +4599,13 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
     }
     break;
   }
+  fetch_stage = "remote_stream_flush";
   ret = cb.flush();
   if (ret < 0) {
     goto set_err_state;
   }
   if (cb.get_data_len() != accounted_size) {
+    fetch_stage = "remote_truncated";
     ret = -EIO;
     ldpp_dout(rctx.dpp, 0) << "ERROR: " << fetched_obj
         << " truncated during fetching, expected " << accounted_size
@@ -4634,17 +4640,20 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
 
   // decode the ACLOwner from RGW_ATTR_ACL for the bucket index
   if (auto i = cb.get_attrs().find(RGW_ATTR_ACL); i != cb.get_attrs().end()) {
+    fetch_stage = "decode_acl";
     ret = decode_policy(rctx.dpp, i->second, &owner);
     if (ret < 0) {
-      return ret;
+      goto set_err_state;
     }
   }
 
   if (override_owner) {
     RGWUserInfo owner_info;
     if (ctl.user->get_info_by_uid(rctx.dpp, *override_owner, &owner_info, rctx.y) < 0) {
+      fetch_stage = "override_owner";
       ldpp_dout(rctx.dpp, 10) << "owner info does not exist" << dendl;
-      return -EINVAL;
+      ret = -EINVAL;
+      goto set_err_state;
     }
 
     owner.id = *override_owner;
@@ -4766,6 +4775,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
 #define MAX_COMPLETE_RETRY 100
   for (i = 0; i < MAX_COMPLETE_RETRY; i++) {
     bool canceled = false;
+    fetch_stage = "index_complete";
     ret = processor.complete(accounted_size, etag, mtime, set_mtime,
                              attrs, rgw::cksum::no_cksum, delete_at, nullptr, nullptr,
 			     nullptr, zones_trace, &canceled, rctx,
@@ -4777,6 +4787,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
     if (copy_if_newer && canceled) {
       ldpp_dout(rctx.dpp, 20) << "raced with another write of obj: " << fetched_obj << dendl;
       dest_obj_ctx.invalidate(dest_obj); /* object was overwritten */
+      fetch_stage = "post_race_dest_state";
       ret = get_obj_state(rctx.dpp, &dest_obj_ctx, dest_bucket_info, stat_dest_obj, &dest_state, &manifest, stat_follow_olh, rctx.y);
       if (ret < 0) {
         ldpp_dout(rctx.dpp, 0) << "ERROR: " << __func__ << ": get_err_state() returned ret=" << ret
@@ -4812,13 +4823,24 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   }
   return 0;
 set_err_state:
+  ldpp_dout(rctx.dpp, 0) << "ERROR: " << __func__ << " failed stage="
+                         << fetch_stage << " ret=" << ret << " " << fetched_obj
+                         << " copy_if_newer=" << (int)copy_if_newer
+                         << " olh_epoch=" << olh_epoch.value_or(0) << dendl;
   if (copy_if_newer && ret == -ERR_NOT_MODIFIED) {
     // we may have already fetched during sync of OP_ADD, but were waiting
     // for OP_LINK_OLH to call set_olh() with a real olh_epoch
     if (olh_epoch && *olh_epoch > 0) {
       constexpr bool log_data_change = true;
+      fetch_stage = "set_olh_after_not_modified";
       ret = set_olh(rctx.dpp, dest_obj_ctx, dest_bucket_info, dest_obj, false, nullptr,
                     *olh_epoch, real_time(), false, rctx.y, zones_trace, log_data_change);
+      if (ret < 0) {
+        ldpp_dout(rctx.dpp, 0) << "ERROR: " << __func__ << " failed stage="
+                               << fetch_stage << " ret=" << ret << " " << fetched_obj
+                               << " copy_if_newer=" << (int)copy_if_newer
+                               << " olh_epoch=" << olh_epoch.value_or(0) << dendl;
+      }
     } else {
       // we already have the latest copy
       ret = 0;
