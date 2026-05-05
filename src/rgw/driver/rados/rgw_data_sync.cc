@@ -4705,9 +4705,14 @@ class RGWBucketFullSyncCR : public RGWCoroutine {
     RGWBucketSyncFlowManager::pipe_rules_ref rules;
     RGWBucketSyncFlowManager::pipe_rules::prefix_map_t::const_iterator iter;
     std::optional<string> cur_prefix;
+    bool force_all_prefixes{false};
 
     void set_rules(RGWBucketSyncFlowManager::pipe_rules_ref& _rules) {
       rules = _rules;
+    }
+
+    void set_force_all_prefixes(bool enabled) {
+      force_all_prefixes = enabled;
     }
 
     bool revalidate_marker(rgw_obj_key *marker) {
@@ -4716,7 +4721,7 @@ class RGWBucketFullSyncCR : public RGWCoroutine {
         return true;
       }
       if (!rules) {
-        return false;
+        return force_all_prefixes;
       }
       iter = rules->prefix_search(marker->name);
       if (iter == rules->prefix_end()) {
@@ -4730,7 +4735,7 @@ class RGWBucketFullSyncCR : public RGWCoroutine {
 
     bool check_key_handled(const rgw_obj_key& key) {
       if (!rules) {
-        return false;
+        return force_all_prefixes;
       }
       if (cur_prefix &&
           boost::starts_with(key.name, *cur_prefix)) {
@@ -4763,6 +4768,7 @@ public:
   {
     zones_trace.insert(sc->source_zone.id, sync_pipe.info.dest_bucket.get_key());
     prefix_handler.set_rules(sync_pipe.get_rules());
+    prefix_handler.set_force_all_prefixes(cct->_conf->rgw_sync_recovery_force_fetch);
   }
 
   int operate(const DoutPrefixProvider *dpp) override;
