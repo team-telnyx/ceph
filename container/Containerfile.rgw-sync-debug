@@ -3,6 +3,7 @@ FROM quay.io/ceph/ceph:v20.2.1
 ARG BUILD_DIR=build.rgw-sync
 
 COPY ${BUILD_DIR}/bin/radosgw /usr/bin/radosgw
+COPY ${BUILD_DIR}/bin/radosgw-admin /usr/bin/radosgw-admin
 COPY ${BUILD_DIR}/lib/libceph-common.so* /usr/lib64/
 COPY ${BUILD_DIR}/lib/librados.so* /usr/lib64/
 COPY src/rgw/rgw_sync_prometheus_exporter.py /usr/local/bin/rgw-sync-prometheus-exporter

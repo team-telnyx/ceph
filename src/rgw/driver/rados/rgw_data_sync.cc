@@ -4594,19 +4594,41 @@ public:
 	      pretty_print(sc->env, "Deleting object s3://{}/{} in sync from zone {}\n",
 			   bs.bucket.name, key, zone_name);
 	    }
-            if (op == CLS_RGW_OP_UNLINK_INSTANCE) {
-              versioned = true;
+            if (cct->_conf->rgw_sync_recovery_copy_only) {
+              set_status("skipping delete in copy-only sync recovery");
+              tn->log(0, SSTR("rgw_sync_recovery_copy_only: skipping delete for "
+                               << sc->source_zone << "/" << bs.bucket << "/" << key
+                               << "[" << versioned_epoch.value_or(0) << "]"));
+              ldpp_dout(dpp, 1) << "rgw_sync_recovery_copy_only: skipping delete for "
+                                 << sc->source_zone << "/" << bs.bucket << "/" << key
+                                 << "[" << versioned_epoch.value_or(0) << "]" << dendl;
+              retcode = 0;
+            } else {
+              if (op == CLS_RGW_OP_UNLINK_INSTANCE) {
+                versioned = true;
+              }
+              if (null_verid) {
+                key.instance = "null";
+              }
+              tn->log(10, SSTR("removing obj: " << sc->source_zone << "/" << bs.bucket << "/" << key << "[" << versioned_epoch.value_or(0) << "]"));
+              call(data_sync_module->remove_object(dpp, sc, sync_pipe, key, timestamp, versioned, versioned_epoch.value_or(0), &zones_trace));
             }
-            if (null_verid) {
-              key.instance = "null";
-            }
-            tn->log(10, SSTR("removing obj: " << sc->source_zone << "/" << bs.bucket << "/" << key << "[" << versioned_epoch.value_or(0) << "]"));
-            call(data_sync_module->remove_object(dpp, sc, sync_pipe, key, timestamp, versioned, versioned_epoch.value_or(0), &zones_trace));
             // our copy of the object is more recent, continue as if it succeeded
           } else if (op == CLS_RGW_OP_LINK_OLH_DM) {
             set_status("creating delete marker");
             tn->log(10, SSTR("creating delete marker: obj: " << sc->source_zone << "/" << bs.bucket << "/" << key << "[" << versioned_epoch.value_or(0) << "]"));
-            call(data_sync_module->create_delete_marker(dpp, sc, sync_pipe, key, timestamp, owner, versioned, versioned_epoch.value_or(0), &zones_trace));
+            if (cct->_conf->rgw_sync_recovery_copy_only) {
+              set_status("skipping delete marker in copy-only sync recovery");
+              tn->log(0, SSTR("rgw_sync_recovery_copy_only: skipping delete marker for "
+                               << sc->source_zone << "/" << bs.bucket << "/" << key
+                               << "[" << versioned_epoch.value_or(0) << "]"));
+              ldpp_dout(dpp, 1) << "rgw_sync_recovery_copy_only: skipping delete marker for "
+                                 << sc->source_zone << "/" << bs.bucket << "/" << key
+                                 << "[" << versioned_epoch.value_or(0) << "]" << dendl;
+              retcode = 0;
+            } else {
+              call(data_sync_module->create_delete_marker(dpp, sc, sync_pipe, key, timestamp, owner, versioned, versioned_epoch.value_or(0), &zones_trace));
+            }
           }
           tn->set_resource_name(SSTR(bucket_str_noinstance(bs.bucket) << "/" << key));
         }

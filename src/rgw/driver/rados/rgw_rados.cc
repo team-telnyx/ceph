@@ -4577,9 +4577,16 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   static constexpr int NUM_ENPOINT_IOERROR_RETRIES = 20;
   for (int tries = 0; tries < NUM_ENPOINT_IOERROR_RETRIES; tries++) {
     fetch_stage = "remote_get_send";
+    rgw_zone_set_entry *trace_condition =
+      cct->_conf->rgw_sync_recovery_force_fetch ? nullptr : &dst_zone_trace;
+    if (!trace_condition) {
+      ldpp_dout(rctx.dpp, 5) << __func__
+        << "(): rgw_sync_recovery_force_fetch enabled; not sending "
+        << "if-not-replicated-to for " << fetched_obj << dendl;
+    }
     ret = conn->get_obj(rctx.dpp, user_id, perm_check_uid, info, src_obj, pmod, unmod_ptr,
                         dest_mtime_weight.zone_short_id, dest_mtime_weight.pg_ver, prepend_meta, get_op, rgwx_stat,
-                        sync_manifest, skip_decrypt, &dst_zone_trace,
+                        sync_manifest, skip_decrypt, trace_condition,
                         sync_cloudtiered, true,
                         &cb, &in_stream_req);
     if (ret < 0) {
