@@ -124,6 +124,9 @@ bool bucket_allowlisted(CephContext *cct, std::string_view bucket)
     while (!item.empty() && item.back() == ' ') {
       item.remove_suffix(1);
     }
+    if (item == "*") {
+      return true;
+    }
     if (item == bucket) {
       return true;
     }
@@ -256,17 +259,39 @@ std::string reason_label(int ret)
   }
 }
 
-void add_debug_bucket(Event *event, CephContext *cct, const rgw_bucket_shard& bs)
+void add_data_shard(Event *event, int shard_id)
 {
-  if (!event || !bucket_allowlisted(cct, bs.bucket.name)) {
+  if (!event || shard_id < 0) {
+    return;
+  }
+
+  event->data_shard = shard_id;
+  if (!event->shard) {
+    event->shard = shard_id;
+  }
+}
+
+void add_bucket(Event *event, const rgw_bucket_shard& bs)
+{
+  if (!event) {
     return;
   }
 
   event->bucket = bs.bucket.name.empty() ? "unknown" : bs.bucket.name;
   event->bucket_id = short_bucket_id(bs.bucket.bucket_id);
   if (bs.shard_id >= 0) {
+    event->bucket_shard = bs.shard_id;
     event->shard = bs.shard_id;
   }
+}
+
+void add_debug_bucket(Event *event, CephContext *cct, const rgw_bucket_shard& bs)
+{
+  if (!event || !bucket_allowlisted(cct, bs.bucket.name)) {
+    return;
+  }
+
+  add_bucket(event, bs);
 }
 
 void emit(const DoutPrefixProvider *dpp, RGWDataSyncCtx *sc, Event event)
@@ -309,6 +334,12 @@ void emit(const DoutPrefixProvider *dpp, RGWDataSyncCtx *sc, Event event)
   }
   if (!event.bucket_id.empty()) {
     append_json_field(payload, "bucket_id", event.bucket_id, &first);
+  }
+  if (event.data_shard) {
+    append_json_field(payload, "data_shard", std::to_string(*event.data_shard), &first);
+  }
+  if (event.bucket_shard) {
+    append_json_field(payload, "bucket_shard", std::to_string(*event.bucket_shard), &first);
   }
   if (event.shard) {
     append_json_field(payload, "shard", std::to_string(*event.shard), &first);

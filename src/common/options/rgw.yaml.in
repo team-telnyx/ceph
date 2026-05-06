@@ -2729,7 +2729,8 @@ options:
   desc: Comma-separated bucket names allowed to use bucket and shard debug labels.
   long_desc: Bucket and shard labels can create high Prometheus cardinality.
     Leave this empty by default and only set it for incident canaries or known
-    buckets under investigation.
+    buckets under investigation. Use * only for short-lived canaries with a
+    bounded exporter series limit.
   default: '""'
   services:
   - rgw

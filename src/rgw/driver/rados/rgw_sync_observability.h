@@ -27,6 +27,8 @@ struct Event {
   std::string reason;
   std::string bucket;
   std::string bucket_id;
+  std::optional<int> data_shard;
+  std::optional<int> bucket_shard;
   std::optional<int> shard;
   std::optional<double> duration_seconds;
   std::optional<double> value;
@@ -38,6 +40,8 @@ std::string result_label(int ret);
 std::string error_label(int ret);
 std::string reason_label(int ret);
 void emit(const DoutPrefixProvider *dpp, RGWDataSyncCtx *sc, Event event);
+void add_data_shard(Event *event, int shard_id);
+void add_bucket(Event *event, const rgw_bucket_shard& bs);
 void add_debug_bucket(Event *event, CephContext *cct, const rgw_bucket_shard& bs);
 
 } // namespace rgw::sync_observability

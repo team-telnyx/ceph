@@ -1423,6 +1423,16 @@ public:
   int operate(const DoutPrefixProvider *dpp) override;
 };
 
+static int data_shard_for_bucket(RGWDataSyncCtx *sc, const rgw_bucket_shard& bs)
+{
+  if (!sc || !sc->env || !sc->env->driver ||
+      !sc->env->driver->svc() ||
+      !sc->env->driver->svc()->datalog_rados) {
+    return -1;
+  }
+  return sc->env->driver->svc()->datalog_rados->choose_oid(bs);
+}
+
 class RGWDataSyncSingleEntryCR : public RGWCoroutine {
   RGWDataSyncCtx *sc;
   RGWDataSyncEnv *sync_env;
@@ -1501,6 +1511,8 @@ public:
             event.error = rgw::sync_observability::error_label(retcode);
             event.duration_seconds = std::chrono::duration<double>(
               ceph::coarse_mono_clock::now() - sync_start).count();
+            rgw::sync_observability::add_data_shard(&event,
+              data_shard_for_bucket(sc, state->key.first));
             rgw::sync_observability::add_debug_bucket(&event, cct, state->key.first);
             rgw::sync_observability::emit(dpp, sc, std::move(event));
           }
@@ -1548,7 +1560,9 @@ public:
             event.phase = "error_repo";
             event.result = rgw::sync_observability::result_label(retcode);
             event.error = rgw::sync_observability::error_label(retcode);
-            rgw::sync_observability::add_debug_bucket(&event, cct, complete->bs);
+            rgw::sync_observability::add_data_shard(&event,
+              data_shard_for_bucket(sc, complete->bs));
+            rgw::sync_observability::add_bucket(&event, complete->bs);
             rgw::sync_observability::emit(dpp, sc, std::move(event));
           }
           if (retcode < 0) {
@@ -1566,6 +1580,8 @@ public:
           event.phase = "retry_repo";
           event.result = rgw::sync_observability::result_label(retcode);
           event.error = rgw::sync_observability::error_label(retcode);
+          rgw::sync_observability::add_data_shard(&event,
+            data_shard_for_bucket(sc, complete->bs));
           rgw::sync_observability::add_debug_bucket(&event, cct, complete->bs);
           rgw::sync_observability::emit(dpp, sc, std::move(event));
         }
@@ -1762,6 +1778,8 @@ public:
           event.duration_seconds = std::chrono::duration<double>(
             ceph::coarse_mono_clock::now() - remote_start).count();
         }
+        rgw::sync_observability::add_data_shard(&event,
+          data_shard_for_bucket(sc, source_bs));
         rgw::sync_observability::add_debug_bucket(&event, cct, source_bs);
         rgw::sync_observability::emit(dpp, sc, std::move(event));
       }
@@ -2183,6 +2201,7 @@ public:
           event.result = rgw::sync_observability::result_label(retcode);
           event.error = rgw::sync_observability::error_label(retcode);
           event.shard = shard_id;
+          rgw::sync_observability::add_data_shard(&event, shard_id);
           event.duration_seconds = std::chrono::duration<double>(
             ceph::coarse_mono_clock::now() - remote_start).count();
           rgw::sync_observability::emit(dpp, sc, std::move(event));
@@ -2195,6 +2214,7 @@ public:
           event.result = rgw::sync_observability::result_label(retcode);
           event.error = rgw::sync_observability::error_label(retcode);
           event.shard = shard_id;
+          rgw::sync_observability::add_data_shard(&event, shard_id);
           event.value = std::chrono::duration<double>(
             ceph::real_clock::now() - sync_marker.timestamp).count();
           rgw::sync_observability::emit(dpp, sc, std::move(event));
@@ -2347,6 +2367,7 @@ public:
           event.result = "retry";
           event.error = "ebusy";
           event.shard = shard_id;
+          rgw::sync_observability::add_data_shard(&event, shard_id);
           rgw::sync_observability::emit(dpp, sc, std::move(event));
         }
         return set_cr_error(-EBUSY);
@@ -2366,6 +2387,7 @@ public:
             event.result = rgw::sync_observability::result_label(ret);
             event.error = rgw::sync_observability::error_label(ret);
             event.shard = shard_id;
+            rgw::sync_observability::add_data_shard(&event, shard_id);
             rgw::sync_observability::emit(dpp, sc, std::move(event));
             return set_cr_error(ret);
           }
@@ -2382,6 +2404,7 @@ public:
         event.result = "success";
         event.error = "none";
         event.shard = shard_id;
+        rgw::sync_observability::add_data_shard(&event, shard_id);
         rgw::sync_observability::emit(dpp, sc, std::move(event));
       }
       /* Reread data sync status to fetch latest marker and objv */
@@ -3090,6 +3113,8 @@ public:
             }
             event.duration_seconds = std::chrono::duration<double>(
               ceph::coarse_mono_clock::now() - remote_start).count();
+            rgw::sync_observability::add_data_shard(&event,
+              data_shard_for_bucket(sc, sync_pipe.info.source_bs));
             rgw::sync_observability::add_debug_bucket(&event, cct, sync_pipe.info.source_bs);
             rgw::sync_observability::emit(dpp, sc, std::move(event));
           }
@@ -3189,6 +3214,8 @@ public:
           }
           event.duration_seconds = std::chrono::duration<double>(
             ceph::coarse_mono_clock::now() - remote_start).count();
+          rgw::sync_observability::add_data_shard(&event,
+            data_shard_for_bucket(sc, sync_pipe.info.source_bs));
           rgw::sync_observability::add_debug_bucket(&event, cct, sync_pipe.info.source_bs);
           rgw::sync_observability::emit(dpp, sc, std::move(event));
         }
@@ -4705,7 +4732,9 @@ public:
           event.op_state = op_state_label(op_state);
           event.failure_stage = object_failure_stage_label(op);
           event.reason = rgw::sync_observability::reason_label(retcode);
-          rgw::sync_observability::add_debug_bucket(&event, cct, bs);
+          rgw::sync_observability::add_data_shard(&event,
+            data_shard_for_bucket(sc, bs));
+          rgw::sync_observability::add_bucket(&event, bs);
           rgw::sync_observability::emit(dpp, sc, std::move(event));
         }
         if (rgw::sync_observability::bucket_debug_enabled(cct, bs.bucket.name)) {
@@ -4714,7 +4743,8 @@ public:
                              << " dest_zone=" << sync_env->svc->zone->zone_name()
                              << " bucket=" << bs.bucket.name
                              << " bucket_id=" << bs.bucket.bucket_id
-                             << " shard=" << bs.shard_id
+                             << " data_shard=" << data_shard_for_bucket(sc, bs)
+                             << " bucket_shard=" << bs.shard_id
                              << " key=" << key
                              << " key_instance=" << key.instance
                              << " versioned=" << static_cast<int>(versioned)
