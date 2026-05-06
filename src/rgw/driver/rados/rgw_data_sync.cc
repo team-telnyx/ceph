@@ -3084,6 +3084,10 @@ public:
             event.remote_op = "object_stat";
             event.result = rgw::sync_observability::result_label(retcode);
             event.error = rgw::sync_observability::error_label(retcode);
+            if (retcode < 0) {
+              event.failure_stage = "source_object_stat";
+              event.reason = rgw::sync_observability::reason_label(retcode);
+            }
             event.duration_seconds = std::chrono::duration<double>(
               ceph::coarse_mono_clock::now() - remote_start).count();
             rgw::sync_observability::add_debug_bucket(&event, cct, sync_pipe.info.source_bs);
@@ -3179,6 +3183,10 @@ public:
           event.remote_op = "object_fetch";
           event.result = rgw::sync_observability::result_label(retcode);
           event.error = rgw::sync_observability::error_label(retcode);
+          if (retcode < 0) {
+            event.failure_stage = "remote_fetch_or_local_put";
+            event.reason = rgw::sync_observability::reason_label(retcode);
+          }
           event.duration_seconds = std::chrono::duration<double>(
             ceph::coarse_mono_clock::now() - remote_start).count();
           rgw::sync_observability::add_debug_bucket(&event, cct, sync_pipe.info.source_bs);
@@ -4471,6 +4479,39 @@ static bool ignore_sync_error(int err) {
   return false;
 }
 
+static std::string op_state_label(RGWPendingState state)
+{
+  switch (state) {
+  case CLS_RGW_STATE_PENDING_MODIFY:
+    return "pending_modify";
+  case CLS_RGW_STATE_COMPLETE:
+    return "complete";
+  case CLS_RGW_STATE_UNKNOWN:
+  default:
+    return "unknown";
+  }
+}
+
+static std::string object_failure_stage_label(RGWModifyOp op)
+{
+  switch (op) {
+  case CLS_RGW_OP_ADD:
+  case CLS_RGW_OP_LINK_OLH:
+    return "remote_fetch_or_local_put";
+  case CLS_RGW_OP_DEL:
+  case CLS_RGW_OP_UNLINK_INSTANCE:
+    return "local_remove";
+  case CLS_RGW_OP_LINK_OLH_DM:
+    return "delete_marker";
+  case CLS_RGW_OP_CANCEL:
+  case CLS_RGW_OP_SYNCSTOP:
+  case CLS_RGW_OP_RESYNC:
+  case CLS_RGW_OP_UNKNOWN:
+  default:
+    return "unsupported_op";
+  }
+}
+
 template <class T, class K>
 class RGWBucketSyncSingleEntryCR : public RGWCoroutine {
   RGWDataSyncCtx *sc;
@@ -4653,6 +4694,43 @@ public:
         set_status() << "failed to sync obj; retcode=" << retcode;
         tn->log(0, SSTR("ERROR: failed to sync object: "
             << bucket_shard_str{bs} << "/" << key.name));
+        {
+          rgw::sync_observability::Event event;
+          event.metric = "errors";
+          event.sync_type = "bucket";
+          event.phase = "object_sync";
+          event.result = rgw::sync_observability::result_label(retcode);
+          event.error = rgw::sync_observability::error_label(retcode);
+          event.operation = std::string{to_string(op)};
+          event.op_state = op_state_label(op_state);
+          event.failure_stage = object_failure_stage_label(op);
+          event.reason = rgw::sync_observability::reason_label(retcode);
+          rgw::sync_observability::add_debug_bucket(&event, cct, bs);
+          rgw::sync_observability::emit(dpp, sc, std::move(event));
+        }
+        if (rgw::sync_observability::bucket_debug_enabled(cct, bs.bucket.name)) {
+          ldpp_dout(dpp, 0) << "RGW_SYNC_DEBUG_OBJECT_FAILURE"
+                             << " source_zone=" << sc->source_zone
+                             << " dest_zone=" << sync_env->svc->zone->zone_name()
+                             << " bucket=" << bs.bucket.name
+                             << " bucket_id=" << bs.bucket.bucket_id
+                             << " shard=" << bs.shard_id
+                             << " key=" << key
+                             << " key_instance=" << key.instance
+                             << " versioned=" << static_cast<int>(versioned)
+                             << " null_verid=" << static_cast<int>(null_verid)
+                             << " versioned_epoch=" << versioned_epoch.value_or(0)
+                             << " op=" << to_string(op)
+                             << " op_state=" << op_state_label(op_state)
+                             << " failure_stage=" << object_failure_stage_label(op)
+                             << " ret=" << retcode
+                             << " error=" << cpp_strerror(-retcode)
+                             << " marker=" << entry_marker
+                             << " timestamp=" << timestamp
+                             << " source_bucket_key=" << sync_pipe.source_bucket_info.bucket.get_key()
+                             << " dest_bucket_key=" << sync_pipe.dest_bucket_info.bucket.get_key()
+                             << dendl;
+        }
         if (!ignore_sync_error(retcode)) {
           error_ss << bucket_shard_str{bs} << "/" << key.name;
           sync_status = retcode;

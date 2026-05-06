@@ -176,6 +176,11 @@ bool enabled(CephContext *cct)
   return cct && cct->_conf->rgw_sync_debug_observability;
 }
 
+bool bucket_debug_enabled(CephContext *cct, std::string_view bucket)
+{
+  return enabled(cct) && bucket_allowlisted(cct, bucket);
+}
+
 std::string result_label(int ret)
 {
   if (ret == 0) {
@@ -220,6 +225,37 @@ std::string error_label(int ret)
   }
 }
 
+std::string reason_label(int ret)
+{
+  if (ret >= 0) {
+    return "none";
+  }
+
+  switch (-ret) {
+  case EACCES:
+  case EPERM:
+    return "permission_denied";
+  case EAGAIN:
+  case EBUSY:
+  case ECANCELED:
+    return "retryable";
+  case ECONNREFUSED:
+  case ECONNRESET:
+  case EHOSTUNREACH:
+  case ENETUNREACH:
+  case ETIMEDOUT:
+    return "transport";
+  case EINVAL:
+    return "invalid_argument";
+  case EIO:
+    return "io";
+  case ENOENT:
+    return "not_found";
+  default:
+    return "unknown";
+  }
+}
+
 void add_debug_bucket(Event *event, CephContext *cct, const rgw_bucket_shard& bs)
 {
   if (!event || !bucket_allowlisted(cct, bs.bucket.name)) {
@@ -255,6 +291,18 @@ void emit(const DoutPrefixProvider *dpp, RGWDataSyncCtx *sc, Event event)
 
   if (!event.remote_op.empty()) {
     append_json_field(payload, "remote_op", event.remote_op, &first);
+  }
+  if (!event.operation.empty()) {
+    append_json_field(payload, "operation", event.operation, &first);
+  }
+  if (!event.op_state.empty()) {
+    append_json_field(payload, "op_state", event.op_state, &first);
+  }
+  if (!event.failure_stage.empty()) {
+    append_json_field(payload, "failure_stage", event.failure_stage, &first);
+  }
+  if (!event.reason.empty()) {
+    append_json_field(payload, "reason", event.reason, &first);
   }
   if (!event.bucket.empty()) {
     append_json_field(payload, "bucket", event.bucket, &first);

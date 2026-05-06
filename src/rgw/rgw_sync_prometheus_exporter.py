@@ -21,6 +21,7 @@ DEFAULT_LABELS = (
 )
 DEBUG_LABELS = ("bucket", "bucket_id", "shard")
 REMOTE_LABELS = DEFAULT_LABELS + ("remote_op",)
+FAILURE_LABELS = DEFAULT_LABELS + ("operation", "op_state", "failure_stage", "reason")
 HISTOGRAM_BUCKETS = (0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 900.0)
 
 
@@ -120,7 +121,7 @@ class Metrics:
             elif metric == "retries":
                 self.inc("rgw_sync_retries_total", labels_for(event, DEFAULT_LABELS))
             elif metric == "errors":
-                self.inc("rgw_sync_errors_total", labels_for(event, DEFAULT_LABELS))
+                self.inc("rgw_sync_errors_total", labels_for(event, FAILURE_LABELS))
             elif metric == "lease":
                 lease_labels = ("realm", "zonegroup", "source_zone", "dest_zone", "result", "error")
                 self.inc("rgw_sync_lease_total", labels_for(event, lease_labels))

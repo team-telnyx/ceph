@@ -21,6 +21,10 @@ struct Event {
   std::string result = "unknown";
   std::string error = "unknown";
   std::string remote_op;
+  std::string operation;
+  std::string op_state;
+  std::string failure_stage;
+  std::string reason;
   std::string bucket;
   std::string bucket_id;
   std::optional<int> shard;
@@ -29,8 +33,10 @@ struct Event {
 };
 
 bool enabled(CephContext *cct);
+bool bucket_debug_enabled(CephContext *cct, std::string_view bucket);
 std::string result_label(int ret);
 std::string error_label(int ret);
+std::string reason_label(int ret);
 void emit(const DoutPrefixProvider *dpp, RGWDataSyncCtx *sc, Event event);
 void add_debug_bucket(Event *event, CephContext *cct, const rgw_bucket_shard& bs);
 
