@@ -4833,7 +4833,18 @@ int RGWBucketFullSyncCR::operate(const DoutPrefixProvider *dpp)
         }
         total_entries++;
         if (!marker_tracker.start(entry->key, total_entries, real_time())) {
-          tn->log(0, SSTR("ERROR: cannot start syncing " << entry->key << ". Duplicate entry?"));
+          tn->log(0, SSTR("ERROR: cannot start syncing " << entry->key
+              << ". Duplicate entry? source_zone=" << sc->source_zone
+              << " bucket=" << bs.bucket
+              << " key_instance=" << entry->key.instance
+              << " op=" << entry->get_modify_op()
+              << " versioned_epoch=" << entry->versioned_epoch
+              << " mtime=" << entry->mtime
+              << " delete_marker=" << (int)entry->delete_marker
+              << " is_latest=" << (int)entry->is_latest
+              << " size=" << entry->size
+              << " etag=" << entry->etag
+              << " rgw_tag=" << entry->rgw_tag));
         } else {
           using SyncCR = RGWBucketSyncSingleEntryCR<rgw_obj_key, rgw_obj_key>;
           yield spawn(new SyncCR(sc, sync_pipe, entry->key,
@@ -5237,7 +5248,18 @@ int RGWBucketShardIncrementalSyncCR::operate(const DoutPrefixProvider *dpp)
         // yield {
           set_status() << "start object sync";
           if (!marker_tracker.start(cur_id, 0, entry->timestamp)) {
-            tn->log(0, SSTR("ERROR: cannot start syncing " << cur_id << ". Duplicate entry?"));
+            tn->log(0, SSTR("ERROR: cannot start syncing " << cur_id
+                << ". Duplicate entry? source_zone=" << sc->source_zone
+                << " bucket=" << bs.bucket
+                << " key=" << key
+                << " key_instance=" << key.instance
+                << " op=" << entry->op
+                << " state=" << entry->state
+                << " timestamp=" << entry->timestamp
+                << " versioned=" << (int)entry->is_versioned()
+                << " null_verid=" << (int)entry->is_null_verid()
+                << " ver_epoch=" << entry->ver.epoch
+                << " ver_pool=" << entry->ver.pool));
           } else {
             std::optional<uint64_t> versioned_epoch;
             rgw_bucket_entry_owner owner(entry->owner, entry->owner_display_name);

@@ -386,11 +386,24 @@ int AtomicObjectProcessor::complete(
 {
   int r = writer.drain();
   if (r < 0) {
+    ldpp_dout(dpp, 0) << "ERROR: AtomicObjectProcessor::complete writer.drain failed"
+                      << " ret=" << r
+                      << " head_obj=" << head_obj
+                      << " bucket=" << bucket_info.bucket
+                      << " olh_epoch=" << olh_epoch.value_or(0)
+                      << dendl;
     return r;
   }
   const uint64_t actual_size = get_actual_size();
   r = manifest_gen.create_next(actual_size);
   if (r < 0) {
+    ldpp_dout(dpp, 0) << "ERROR: AtomicObjectProcessor::complete manifest create_next failed"
+                      << " ret=" << r
+                      << " head_obj=" << head_obj
+                      << " bucket=" << bucket_info.bucket
+                      << " olh_epoch=" << olh_epoch.value_or(0)
+                      << " actual_size=" << actual_size
+                      << dendl;
     return r;
   }
 
@@ -421,12 +434,29 @@ int AtomicObjectProcessor::complete(
   r = read_cloudtier_info_from_attrs(attrs, obj_op.meta.category, obj_op.meta.olh_epoch, manifest);
 
   if (r < 0) { // incase of any errors while decoding tier_config/restore attrs
+    ldpp_dout(dpp, 0) << "ERROR: AtomicObjectProcessor::complete cloudtier attr decode failed"
+                      << " ret=" << r
+                      << " head_obj=" << head_obj
+                      << " bucket=" << bucket_info.bucket
+                      << " olh_epoch=" << olh_epoch.value_or(0)
+                      << dendl;
     return r;
   }
 
   r = obj_op.write_meta(actual_size, accounted_size, attrs, rctx,
                         writer.get_trace(), flags & rgw::sal::FLAG_LOG_OP);
   if (r < 0) {
+    ldpp_dout(dpp, 0) << "ERROR: AtomicObjectProcessor::complete write_meta failed"
+                      << " ret=" << r
+                      << " head_obj=" << head_obj
+                      << " bucket=" << bucket_info.bucket
+                      << " olh_epoch=" << olh_epoch.value_or(0)
+                      << " actual_size=" << actual_size
+                      << " accounted_size=" << accounted_size
+                      << " etag=" << etag
+                      << " set_mtime=" << set_mtime
+                      << " flags=" << flags
+                      << dendl;
     if (r == -ETIMEDOUT) {
       // The head object write may eventually succeed, clear the set of objects for deletion. if it
       // doesn't ever succeed, we'll orphan any tail objects as if we'd crashed before that write

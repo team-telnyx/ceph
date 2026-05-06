@@ -4839,7 +4839,13 @@ set_err_state:
   ldpp_dout(rctx.dpp, 0) << "ERROR: " << __func__ << " failed stage="
                          << fetch_stage << " ret=" << ret << " " << fetched_obj
                          << " copy_if_newer=" << (int)copy_if_newer
-                         << " olh_epoch=" << olh_epoch.value_or(0) << dendl;
+                         << " olh_epoch=" << olh_epoch.value_or(0)
+                         << " source_zone=" << source_zone
+                         << " src_instance=" << src_obj.key.instance
+                         << " dest_instance=" << dest_obj.key.instance
+                         << " stat_follow_olh=" << (int)stat_follow_olh
+                         << " stat_dest_obj=" << stat_dest_obj
+                         << dendl;
   if (copy_if_newer && ret == -ERR_NOT_MODIFIED) {
     // we may have already fetched during sync of OP_ADD, but were waiting
     // for OP_LINK_OLH to call set_olh() with a real olh_epoch
