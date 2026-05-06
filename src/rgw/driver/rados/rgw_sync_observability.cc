@@ -329,11 +329,26 @@ void emit(const DoutPrefixProvider *dpp, RGWDataSyncCtx *sc, Event event)
   if (!event.reason.empty()) {
     append_json_field(payload, "reason", event.reason, &first);
   }
+  if (!event.remote_id.empty()) {
+    append_json_field(payload, "remote_id", event.remote_id, &first);
+  }
+  if (!event.endpoint_event.empty()) {
+    append_json_field(payload, "endpoint_event", event.endpoint_event, &first);
+  }
+  if (!event.endpoint_hash.empty()) {
+    append_json_field(payload, "endpoint_hash", event.endpoint_hash, &first);
+  }
   if (!event.bucket.empty()) {
     append_json_field(payload, "bucket", event.bucket, &first);
   }
   if (!event.bucket_id.empty()) {
     append_json_field(payload, "bucket_id", event.bucket_id, &first);
+  }
+  if (event.endpoint_count) {
+    append_json_field(payload, "endpoint_count", std::to_string(*event.endpoint_count), &first);
+  }
+  if (event.unavailable_count) {
+    append_json_field(payload, "unavailable_count", std::to_string(*event.unavailable_count), &first);
   }
   if (event.data_shard) {
     append_json_field(payload, "data_shard", std::to_string(*event.data_shard), &first);
@@ -344,6 +359,9 @@ void emit(const DoutPrefixProvider *dpp, RGWDataSyncCtx *sc, Event event)
   if (event.shard) {
     append_json_field(payload, "shard", std::to_string(*event.shard), &first);
   }
+  if (event.unavailable_age_seconds) {
+    append_json_number(payload, "unavailable_age_seconds", *event.unavailable_age_seconds, &first);
+  }
   if (event.duration_seconds) {
     append_json_number(payload, "duration_seconds", *event.duration_seconds, &first);
   }
@@ -353,6 +371,66 @@ void emit(const DoutPrefixProvider *dpp, RGWDataSyncCtx *sc, Event event)
 
   payload << "}\n";
   send_datagram(dpp, sc->cct, payload.str());
+}
+
+void emit(const DoutPrefixProvider *dpp, CephContext *cct, Event event)
+{
+  if (!enabled(cct)) {
+    return;
+  }
+
+  std::ostringstream payload;
+  bool first = true;
+  payload << '{';
+  append_json_field(payload, "event", "rgw_sync", &first);
+  append_json_field(payload, "metric", event.metric, &first);
+  append_json_field(payload, "sync_type", event.sync_type, &first);
+  append_json_field(payload, "phase", event.phase, &first);
+  append_json_field(payload, "result", event.result, &first);
+  append_json_field(payload, "error", event.error, &first);
+
+  if (!event.remote_op.empty()) {
+    append_json_field(payload, "remote_op", event.remote_op, &first);
+  }
+  if (!event.operation.empty()) {
+    append_json_field(payload, "operation", event.operation, &first);
+  }
+  if (!event.op_state.empty()) {
+    append_json_field(payload, "op_state", event.op_state, &first);
+  }
+  if (!event.failure_stage.empty()) {
+    append_json_field(payload, "failure_stage", event.failure_stage, &first);
+  }
+  if (!event.reason.empty()) {
+    append_json_field(payload, "reason", event.reason, &first);
+  }
+  if (!event.remote_id.empty()) {
+    append_json_field(payload, "remote_id", event.remote_id, &first);
+  }
+  if (!event.endpoint_event.empty()) {
+    append_json_field(payload, "endpoint_event", event.endpoint_event, &first);
+  }
+  if (!event.endpoint_hash.empty()) {
+    append_json_field(payload, "endpoint_hash", event.endpoint_hash, &first);
+  }
+  if (event.endpoint_count) {
+    append_json_field(payload, "endpoint_count", std::to_string(*event.endpoint_count), &first);
+  }
+  if (event.unavailable_count) {
+    append_json_field(payload, "unavailable_count", std::to_string(*event.unavailable_count), &first);
+  }
+  if (event.unavailable_age_seconds) {
+    append_json_number(payload, "unavailable_age_seconds", *event.unavailable_age_seconds, &first);
+  }
+  if (event.duration_seconds) {
+    append_json_number(payload, "duration_seconds", *event.duration_seconds, &first);
+  }
+  if (event.value) {
+    append_json_number(payload, "value", *event.value, &first);
+  }
+
+  payload << "}\n";
+  send_datagram(dpp, cct, payload.str());
 }
 
 } // namespace rgw::sync_observability

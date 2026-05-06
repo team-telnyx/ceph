@@ -28,6 +28,23 @@ ERROR_LABELS = FAILURE_LABELS + DEBUG_LABELS
 LEASE_LABELS = ("realm", "zonegroup", "source_zone", "dest_zone", "result", "error")
 LEASE_SHARD_LABELS = LEASE_LABELS + ("data_shard", "shard")
 MARKER_LABELS = ("realm", "zonegroup", "source_zone", "dest_zone", "sync_type", "data_shard", "shard")
+ENDPOINT_LABELS = (
+    "remote_id",
+    "endpoint_event",
+    "reason",
+    "result",
+    "error",
+    "endpoint_hash",
+    "endpoint_count",
+)
+ENDPOINT_COUNT_LABELS = (
+    "remote_id",
+    "endpoint_event",
+    "reason",
+    "result",
+    "error",
+    "endpoint_count",
+)
 HISTOGRAM_BUCKETS = (0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 900.0)
 
 
@@ -162,6 +179,25 @@ class Metrics:
                 self.set_gauge("rgw_sync_shard_marker_lag_seconds", labels_for(event, MARKER_LABELS), value)
             elif metric == "debug_bucket_shard_state" and value is not None:
                 self.set_gauge("rgw_sync_debug_bucket_shard_state", labels_for(event, DEFAULT_LABELS), value)
+            elif metric == "endpoint_availability":
+                labels = labels_for(event, ENDPOINT_LABELS)
+                count_labels = labels_for(event, ENDPOINT_COUNT_LABELS)
+                self.inc("rgw_sync_endpoint_availability_events_total", labels)
+                self.set_gauge("rgw_sync_endpoint_availability_last_seen_timestamp_seconds", labels, now)
+                unavailable_count = event.get("unavailable_count")
+                if unavailable_count is not None:
+                    self.set_gauge(
+                        "rgw_sync_endpoint_unavailable_count",
+                        count_labels,
+                        unavailable_count,
+                    )
+                unavailable_age = event.get("unavailable_age_seconds")
+                if unavailable_age is not None:
+                    self.set_gauge(
+                        "rgw_sync_endpoint_unavailable_age_seconds",
+                        labels,
+                        unavailable_age,
+                    )
             else:
                 self.bad_events += 1
 
@@ -289,6 +325,20 @@ def run_self_test():
         "shard": "68",
         "value": 120.0,
     })
+    metrics.handle({
+        "metric": "endpoint_availability",
+        "sync_type": "remote",
+        "phase": "endpoint",
+        "result": "error",
+        "error": "errno_22",
+        "remote_id": "mn1-zone-id",
+        "endpoint_event": "no_usable_endpoint",
+        "reason": "all_endpoints_unconnectable",
+        "endpoint_hash": "all",
+        "endpoint_count": "1",
+        "unavailable_count": "1",
+        "unavailable_age_seconds": 0.75,
+    })
 
     rendered = metrics.render()
     required = (
@@ -297,6 +347,10 @@ def run_self_test():
         "rgw_sync_remote_request_last_failure_timestamp_seconds",
         'rgw_sync_lease_last_failure_timestamp_seconds{realm="r",zonegroup="zg",source_zone="src",dest_zone="dst",result="retry",error="ebusy",data_shard="68",shard="68"}',
         'rgw_sync_shard_marker_lag_seconds{realm="r",zonegroup="zg",source_zone="src",dest_zone="dst",sync_type="incremental",data_shard="68",shard="68"} 120.0',
+        'rgw_sync_endpoint_availability_events_total{remote_id="mn1-zone-id",endpoint_event="no_usable_endpoint",reason="all_endpoints_unconnectable",result="error",error="errno_22",endpoint_hash="all",endpoint_count="1"} 1.0',
+        "rgw_sync_endpoint_availability_last_seen_timestamp_seconds",
+        'rgw_sync_endpoint_unavailable_count{remote_id="mn1-zone-id",endpoint_event="no_usable_endpoint",reason="all_endpoints_unconnectable",result="error",error="errno_22",endpoint_count="1"} 1.0',
+        'rgw_sync_endpoint_unavailable_age_seconds{remote_id="mn1-zone-id",endpoint_event="no_usable_endpoint",reason="all_endpoints_unconnectable",result="error",error="errno_22",endpoint_hash="all",endpoint_count="1"} 0.75',
     )
     missing = [item for item in required if item not in rendered]
     if missing:

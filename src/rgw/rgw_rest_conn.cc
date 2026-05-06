@@ -6,10 +6,62 @@
 #include "rgw_http_errors.h"
 #include "rgw_sal.h"
 #include "rgw_rados.h"
+#include "driver/rados/rgw_sync_observability.h"
+
+#include <algorithm>
+#include <iomanip>
+#include <optional>
+#include <sstream>
 
 #define dout_subsys ceph_subsys_rgw
 
 using namespace std;
+
+namespace {
+
+constexpr uint32_t CONN_STATUS_EXPIRE_SECS = 2;
+
+std::string endpoint_hash_label(const std::string& endpoint)
+{
+  uint64_t hash = 1469598103934665603ULL;
+  for (unsigned char c : endpoint) {
+    hash ^= c;
+    hash *= 1099511628211ULL;
+  }
+
+  std::ostringstream out;
+  out << std::hex << std::setfill('0') << std::setw(16) << hash;
+  return out.str();
+}
+
+void emit_endpoint_availability(CephContext *cct,
+                                const std::string& remote_id,
+                                const std::string& endpoint_event,
+                                const std::string& reason,
+                                const std::string& result,
+                                int ret,
+                                const std::string& endpoint_hash,
+                                size_t endpoint_count,
+                                size_t unavailable_count,
+                                std::optional<double> unavailable_age_seconds = std::nullopt)
+{
+  rgw::sync_observability::Event event;
+  event.metric = "endpoint_availability";
+  event.sync_type = "remote";
+  event.phase = "endpoint";
+  event.result = result;
+  event.error = rgw::sync_observability::error_label(ret);
+  event.remote_id = remote_id.empty() ? "unknown" : remote_id;
+  event.endpoint_event = endpoint_event;
+  event.reason = reason;
+  event.endpoint_hash = endpoint_hash.empty() ? "unknown" : endpoint_hash;
+  event.endpoint_count = static_cast<int>(endpoint_count);
+  event.unavailable_count = static_cast<int>(unavailable_count);
+  event.unavailable_age_seconds = unavailable_age_seconds;
+  rgw::sync_observability::emit(nullptr, cct, std::move(event));
+}
+
+} // namespace
 
 RGWRESTConn::RGWRESTConn(CephContext *_cct, rgw::sal::Driver* driver,
                          const string& _remote_id,
@@ -82,11 +134,22 @@ RGWRESTConn& RGWRESTConn::operator=(RGWRESTConn&& other)
 int RGWRESTConn::get_url(string& endpoint)
 {
   if (endpoints.empty()) {
-    ldout(cct, 0) << "ERROR: endpoints not configured for upstream zone" << dendl;
+    emit_endpoint_availability(cct, remote_id, "no_endpoint_configured",
+                               "no_endpoint_configured", "error", -EINVAL,
+                               "none", 0, 0);
+    ldout(cct, 0) << "RGW_SYNC_DEBUG_ENDPOINT_AVAILABILITY"
+                  << " event=no_endpoint_configured"
+                  << " remote_id=" << remote_id
+                  << " endpoint_count=0"
+                  << " unavailable_count=0"
+                  << " reason=no_endpoint_configured"
+                  << " ret=" << -EINVAL << dendl;
     return -EINVAL;
   }
 
   size_t num = 0;
+  size_t unavailable_count = 0;
+  double max_unavailable_age_seconds = 0;
   while (num < endpoints.size()) {
     int i = ++counter;
     endpoint = endpoints[i % endpoints.size()];
@@ -110,17 +173,48 @@ int RGWRESTConn::get_url(string& endpoint)
                    << ceph::real_clock::to_double(upd_time)
                    << " diff=" << diff << dendl;
 
-    static constexpr uint32_t CONN_STATUS_EXPIRE_SECS = 2;
     if (diff >= CONN_STATUS_EXPIRE_SECS) {
       endpoints_status[endpoint].store(ceph::real_clock::zero());
-      ldout(cct, 10) << "endpoint " << endpoint << " unconnectable status expired. mark it connectable" << dendl;
+      size_t current_unavailable_count = 0;
+      for (const auto& [url, status] : endpoints_status) {
+        if (!ceph::real_clock::is_zero(status.load())) {
+          current_unavailable_count++;
+        }
+      }
+      const auto endpoint_hash = endpoint_hash_label(endpoint);
+      emit_endpoint_availability(cct, remote_id, "marked_connectable",
+                                 "status_expired", "success", 0,
+                                 endpoint_hash, endpoints.size(), current_unavailable_count,
+                                 diff);
+      ldout(cct, 10) << "RGW_SYNC_DEBUG_ENDPOINT_AVAILABILITY"
+                     << " event=marked_connectable"
+                     << " remote_id=" << remote_id
+                     << " endpoint_hash=" << endpoint_hash
+                     << " endpoint_count=" << endpoints.size()
+                     << " unavailable_count=" << current_unavailable_count
+                     << " unavailable_age_seconds=" << diff
+                     << " reason=status_expired"
+                     << " url=" << endpoint << dendl;
       break;
     }
+    unavailable_count++;
+    max_unavailable_age_seconds = std::max(max_unavailable_age_seconds, diff);
     num++;
   };
 
   if (num == endpoints.size()) {
-    ldout(cct, 5) << "ERROR: no valid endpoint" << dendl;
+    emit_endpoint_availability(cct, remote_id, "no_usable_endpoint",
+                               "all_endpoints_unconnectable", "error", -EINVAL,
+                               "all", endpoints.size(), unavailable_count,
+                               max_unavailable_age_seconds);
+    ldout(cct, 5) << "RGW_SYNC_DEBUG_ENDPOINT_AVAILABILITY"
+                  << " event=no_usable_endpoint"
+                  << " remote_id=" << remote_id
+                  << " endpoint_count=" << endpoints.size()
+                  << " unavailable_count=" << unavailable_count
+                  << " unavailable_age_seconds=" << max_unavailable_age_seconds
+                  << " reason=all_endpoints_unconnectable"
+                  << " ret=" << -EINVAL << dendl;
     return -EINVAL;
   }
   ldout(cct, 20) << "get_url picked endpoint=" << endpoint << dendl;
@@ -138,14 +232,43 @@ string RGWRESTConn::get_url()
 void RGWRESTConn::set_url_unconnectable(const std::string& endpoint)
 {
   if (endpoint.empty() || endpoints_status.find(endpoint) == endpoints_status.end()) {
-    ldout(cct, 0) << "ERROR: endpoint is not a valid or doesn't have status. endpoint="
-                  << endpoint << dendl;
+    emit_endpoint_availability(cct, remote_id, "invalid_endpoint",
+                               "missing_endpoint_status", "error", -EINVAL,
+                               endpoint.empty() ? "none" : endpoint_hash_label(endpoint),
+                               endpoints.size(), 0);
+    ldout(cct, 0) << "RGW_SYNC_DEBUG_ENDPOINT_AVAILABILITY"
+                  << " event=invalid_endpoint"
+                  << " remote_id=" << remote_id
+                  << " endpoint_hash="
+                  << (endpoint.empty() ? "none" : endpoint_hash_label(endpoint))
+                  << " endpoint_count=" << endpoints.size()
+                  << " unavailable_count=0"
+                  << " reason=missing_endpoint_status"
+                  << " endpoint=" << endpoint
+                  << " ret=" << -EINVAL << dendl;
     return;
   }
 
   endpoints_status[endpoint].store(ceph::real_clock::now());
 
-  ldout(cct, 10) << "set endpoint unconnectable. url=" << endpoint << dendl;
+  size_t unavailable_count = 0;
+  for (const auto& [url, status] : endpoints_status) {
+    if (!ceph::real_clock::is_zero(status.load())) {
+      unavailable_count++;
+    }
+  }
+  const auto endpoint_hash = endpoint_hash_label(endpoint);
+  emit_endpoint_availability(cct, remote_id, "marked_unconnectable",
+                             "io", "retry", -EIO,
+                             endpoint_hash, endpoints.size(), unavailable_count);
+  ldout(cct, 10) << "RGW_SYNC_DEBUG_ENDPOINT_AVAILABILITY"
+                 << " event=marked_unconnectable"
+                 << " remote_id=" << remote_id
+                 << " endpoint_hash=" << endpoint_hash
+                 << " endpoint_count=" << endpoints.size()
+                 << " unavailable_count=" << unavailable_count
+                 << " reason=io"
+                 << " url=" << endpoint << dendl;
 }
 
 void RGWRESTConn::populate_params(param_vec_t& params, const rgw_owner* uid, const string& zonegroup)
