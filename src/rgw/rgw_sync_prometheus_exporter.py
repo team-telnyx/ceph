@@ -146,9 +146,10 @@ class Metrics:
             elif metric == "retries":
                 self.inc("rgw_sync_retries_total", labels_for(event, DEFAULT_LABELS))
             elif metric == "errors":
-                labels = labels_for(event, ERROR_LABELS)
-                self.inc("rgw_sync_errors_total", labels)
-                self.set_gauge("rgw_sync_error_last_seen_timestamp_seconds", labels, now)
+                if failed_event(event):
+                    labels = labels_for(event, ERROR_LABELS)
+                    self.inc("rgw_sync_errors_total", labels)
+                    self.set_gauge("rgw_sync_error_last_seen_timestamp_seconds", labels, now)
             elif metric == "lease":
                 self.inc("rgw_sync_lease_total", labels_for(event, LEASE_LABELS))
                 if failed_event(event):
