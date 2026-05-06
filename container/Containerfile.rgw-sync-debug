@@ -1,11 +1,23 @@
-FROM quay.io/ceph/ceph:v20.2.1
+FROM quay.io/ceph/ceph:v20.2.1 AS rgw-sync-debug-artifacts
 
 ARG BUILD_DIR=build.rgw-sync
 
-COPY ${BUILD_DIR}/bin/radosgw /usr/bin/radosgw
-COPY ${BUILD_DIR}/bin/radosgw-admin /usr/bin/radosgw-admin
-COPY ${BUILD_DIR}/lib/libceph-common.so* /usr/lib64/
-COPY ${BUILD_DIR}/lib/librados.so* /usr/lib64/
+COPY ${BUILD_DIR}/bin/radosgw /tmp/rgw-sync-debug/bin/radosgw
+COPY ${BUILD_DIR}/bin/radosgw-admin /tmp/rgw-sync-debug/bin/radosgw-admin
+COPY ${BUILD_DIR}/lib/libceph-common.so* /tmp/rgw-sync-debug/lib64/
+COPY ${BUILD_DIR}/lib/librados.so* /tmp/rgw-sync-debug/lib64/
+RUN strip --strip-debug \
+      /tmp/rgw-sync-debug/bin/radosgw \
+      /tmp/rgw-sync-debug/bin/radosgw-admin \
+      /tmp/rgw-sync-debug/lib64/libceph-common.so.2 \
+      /tmp/rgw-sync-debug/lib64/librados.so.2.0.0
+
+FROM quay.io/ceph/ceph:v20.2.1
+
+COPY --from=rgw-sync-debug-artifacts /tmp/rgw-sync-debug/bin/radosgw /usr/bin/radosgw
+COPY --from=rgw-sync-debug-artifacts /tmp/rgw-sync-debug/bin/radosgw-admin /usr/bin/radosgw-admin
+COPY --from=rgw-sync-debug-artifacts /tmp/rgw-sync-debug/lib64/libceph-common.so* /usr/lib64/
+COPY --from=rgw-sync-debug-artifacts /tmp/rgw-sync-debug/lib64/librados.so* /usr/lib64/
 COPY src/rgw/rgw_sync_prometheus_exporter.py /usr/local/bin/rgw-sync-prometheus-exporter
 
 RUN ldconfig && chmod 0755 /usr/local/bin/rgw-sync-prometheus-exporter
