@@ -271,6 +271,30 @@ void RGWRESTConn::set_url_unconnectable(const std::string& endpoint)
                  << " url=" << endpoint << dendl;
 }
 
+void RGWRESTConn::set_url_unconnectable(const std::string& endpoint,
+                                        const char *source,
+                                        int ret,
+                                        long http_status,
+                                        int req_status,
+                                        const std::string& request)
+{
+  const auto endpoint_hash = endpoint.empty() ? std::string{"none"} : endpoint_hash_label(endpoint);
+  ldout(cct, 0) << "RGW_SYNC_DEBUG_ENDPOINT_POISON"
+                << " source=" << (source ? source : "unknown")
+                << " remote_id=" << remote_id
+                << " endpoint_hash=" << endpoint_hash
+                << " endpoint_count=" << endpoints.size()
+                << " ret=" << ret
+                << " ret_error=" << (ret < 0 ? cpp_strerror(-ret) : std::string{"none"})
+                << " http_status=" << http_status
+                << " req_status=" << req_status
+                << " req_error=" << (req_status < 0 ? cpp_strerror(-req_status) : std::string{"none"})
+                << " request=" << request
+                << " url=" << endpoint
+                << dendl;
+  set_url_unconnectable(endpoint);
+}
+
 void RGWRESTConn::populate_params(param_vec_t& params, const rgw_owner* uid, const string& zonegroup)
 {
   populate_uid(params, uid);
@@ -298,7 +322,8 @@ auto RGWRESTConn::forward(const DoutPrefixProvider *dpp, const rgw_owner& uid,
     } else if (result.error() != -EIO) {
       return result;
     }
-    set_url_unconnectable(url);
+    set_url_unconnectable(url, "RGWRESTConn::forward",
+                          result.error(), req.get_http_status(), req.get_status(), req.to_str());
     if (tries < NUM_ENPOINT_IOERROR_RETRIES - 1) {
       ldpp_dout(dpp, 20) << __func__  << "(): failed to forward request. retries=" << tries << dendl;
     }
@@ -328,7 +353,8 @@ auto RGWRESTConn::forward_iam(const DoutPrefixProvider *dpp, const req_info& inf
     } else if (result.error() != -EIO) {
       return result;
     }
-    set_url_unconnectable(url);
+    set_url_unconnectable(url, "RGWRESTConn::forward_iam",
+                          result.error(), req.get_http_status(), req.get_status(), req.to_str());
     if (tries < NUM_ENPOINT_IOERROR_RETRIES - 1) {
       ldpp_dout(dpp, 20) << __func__  << "(): failed to forward request. retries=" << tries << dendl;
     }
@@ -386,7 +412,8 @@ int RGWRESTConn::complete_request(const DoutPrefixProvider* dpp,
   int ret = req->complete_request(dpp, y, &etag, mtime);
   if (ret == -EIO) {
     ldout(cct, 5) << __func__ << ": complete_request() returned ret=" << ret << dendl;
-    set_url_unconnectable(req->get_url_orig());
+    set_url_unconnectable(req->get_url_orig(), "RGWRESTConn::complete_request(s3_put)",
+                          ret, req->get_http_status(), req->get_status(), req->to_str());
   }
 
   delete req;
@@ -564,7 +591,8 @@ int RGWRESTConn::complete_request(const DoutPrefixProvider* dpp,
   int ret = req->complete_request(dpp, y, etag, mtime, psize, pattrs, pheaders);
   if (ret == -EIO) {
     ldout(cct, 5) << __func__ << ": complete_request() returned ret=" << ret << dendl;
-    set_url_unconnectable(req->get_url_orig());
+    set_url_unconnectable(req->get_url_orig(), "RGWRESTConn::complete_request(stream)",
+                          ret, req->get_http_status(), req->get_status(), req->to_str());
   }
   delete req;
 
@@ -614,7 +642,8 @@ int RGWRESTConn::get_resource(const DoutPrefixProvider *dpp,
 
     ret = req.complete_request(dpp, y);
     if (ret == -EIO) {
-      set_url_unconnectable(url);
+      set_url_unconnectable(url, "RGWRESTConn::get_resource",
+                            ret, req.get_http_status(), req.get_status(), req.to_str());
       if (tries < NUM_ENPOINT_IOERROR_RETRIES - 1) {
         ldpp_dout(dpp, 20) << __func__  << "(): failed to get resource. retries=" << tries << dendl;
         continue;
@@ -668,7 +697,8 @@ int RGWRESTConn::send_resource(const DoutPrefixProvider *dpp, const std::string&
 
     ret = req.complete_request(dpp, y);
     if (ret == -EIO) {
-      set_url_unconnectable(url);
+      set_url_unconnectable(url, "RGWRESTConn::send_resource",
+                            ret, req.get_http_status(), req.get_status(), req.to_str());
       if (tries < NUM_ENPOINT_IOERROR_RETRIES - 1) {
         ldpp_dout(dpp, 20) << __func__  << "(): failed to send resource. retries=" << tries << dendl;
         continue;
@@ -727,7 +757,8 @@ int RGWRESTReadResource::read(const DoutPrefixProvider *dpp, optional_yield y)
 
   ret = req.complete_request(dpp, y);
   if (ret == -EIO) {
-    conn->set_url_unconnectable(req.get_url_orig());
+    conn->set_url_unconnectable(req.get_url_orig(), "RGWRESTReadResource::read",
+                                ret, req.get_http_status(), req.get_status(), req.to_str());
     ldpp_dout(dpp, 20) << __func__ << ": complete_request() returned ret=" << ret << dendl;
   }
 
@@ -794,7 +825,8 @@ int RGWRESTSendResource::send(const DoutPrefixProvider *dpp, bufferlist& outbl, 
 
   ret = req.complete_request(dpp, y);
   if (ret == -EIO) {
-    conn->set_url_unconnectable(req.get_url_orig());
+    conn->set_url_unconnectable(req.get_url_orig(), "RGWRESTSendResource::send",
+                                ret, req.get_http_status(), req.get_status(), req.to_str());
     ldpp_dout(dpp, 20) << __func__ << ": complete_request() returned ret=" << ret << dendl;
   }
 

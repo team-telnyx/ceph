@@ -323,6 +323,36 @@ void emit(const DoutPrefixProvider *dpp, RGWDataSyncCtx *sc, Event event)
   if (!event.op_state.empty()) {
     append_json_field(payload, "op_state", event.op_state, &first);
   }
+  if (!event.bilog_op.empty()) {
+    append_json_field(payload, "bilog_op", event.bilog_op, &first);
+  }
+  if (!event.op_id.empty()) {
+    append_json_field(payload, "op_id", event.op_id, &first);
+  }
+  if (!event.op_tag.empty()) {
+    append_json_field(payload, "op_tag", event.op_tag, &first);
+  }
+  if (!event.object.empty()) {
+    append_json_field(payload, "object", event.object, &first);
+  }
+  if (!event.object_instance.empty()) {
+    append_json_field(payload, "object_instance", event.object_instance, &first);
+  }
+  if (!event.versioned.empty()) {
+    append_json_field(payload, "versioned", event.versioned, &first);
+  }
+  if (!event.null_verid.empty()) {
+    append_json_field(payload, "null_verid", event.null_verid, &first);
+  }
+  if (!event.bilog_flags.empty()) {
+    append_json_field(payload, "bilog_flags", event.bilog_flags, &first);
+  }
+  if (!event.owner.empty()) {
+    append_json_field(payload, "owner", event.owner, &first);
+  }
+  if (!event.owner_display_name.empty()) {
+    append_json_field(payload, "owner_display_name", event.owner_display_name, &first);
+  }
   if (!event.failure_stage.empty()) {
     append_json_field(payload, "failure_stage", event.failure_stage, &first);
   }
@@ -397,6 +427,36 @@ void emit(const DoutPrefixProvider *dpp, CephContext *cct, Event event)
   }
   if (!event.op_state.empty()) {
     append_json_field(payload, "op_state", event.op_state, &first);
+  }
+  if (!event.bilog_op.empty()) {
+    append_json_field(payload, "bilog_op", event.bilog_op, &first);
+  }
+  if (!event.op_id.empty()) {
+    append_json_field(payload, "op_id", event.op_id, &first);
+  }
+  if (!event.op_tag.empty()) {
+    append_json_field(payload, "op_tag", event.op_tag, &first);
+  }
+  if (!event.object.empty()) {
+    append_json_field(payload, "object", event.object, &first);
+  }
+  if (!event.object_instance.empty()) {
+    append_json_field(payload, "object_instance", event.object_instance, &first);
+  }
+  if (!event.versioned.empty()) {
+    append_json_field(payload, "versioned", event.versioned, &first);
+  }
+  if (!event.null_verid.empty()) {
+    append_json_field(payload, "null_verid", event.null_verid, &first);
+  }
+  if (!event.bilog_flags.empty()) {
+    append_json_field(payload, "bilog_flags", event.bilog_flags, &first);
+  }
+  if (!event.owner.empty()) {
+    append_json_field(payload, "owner", event.owner, &first);
+  }
+  if (!event.owner_display_name.empty()) {
+    append_json_field(payload, "owner_display_name", event.owner_display_name, &first);
   }
   if (!event.failure_stage.empty()) {
     append_json_field(payload, "failure_stage", event.failure_stage, &first);

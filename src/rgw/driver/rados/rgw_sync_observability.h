@@ -23,6 +23,16 @@ struct Event {
   std::string remote_op;
   std::string operation;
   std::string op_state;
+  std::string bilog_op;
+  std::string op_id;
+  std::string op_tag;
+  std::string object;
+  std::string object_instance;
+  std::string versioned;
+  std::string null_verid;
+  std::string bilog_flags;
+  std::string owner;
+  std::string owner_display_name;
   std::string failure_stage;
   std::string reason;
   std::string remote_id;

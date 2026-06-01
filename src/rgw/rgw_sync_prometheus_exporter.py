@@ -25,6 +25,15 @@ REMOTE_LABELS = DEFAULT_LABELS + ("remote_op",)
 REMOTE_FAILURE_LABELS = REMOTE_LABELS + ("failure_stage", "reason")
 FAILURE_LABELS = DEFAULT_LABELS + ("operation", "op_state", "failure_stage", "reason")
 ERROR_LABELS = FAILURE_LABELS + DEBUG_LABELS
+BILOG_ERROR_LABELS = DEFAULT_LABELS + DEBUG_LABELS + (
+    "bilog_op",
+    "op_state",
+    "versioned",
+    "null_verid",
+    "bilog_flags",
+    "failure_stage",
+    "reason",
+)
 LEASE_LABELS = ("realm", "zonegroup", "source_zone", "dest_zone", "result", "error")
 LEASE_SHARD_LABELS = LEASE_LABELS + ("data_shard", "shard")
 MARKER_LABELS = ("realm", "zonegroup", "source_zone", "dest_zone", "sync_type", "data_shard", "shard")
@@ -167,6 +176,11 @@ class Metrics:
                     labels = labels_for(event, ERROR_LABELS)
                     self.inc("rgw_sync_errors_total", labels)
                     self.set_gauge("rgw_sync_error_last_seen_timestamp_seconds", labels, now)
+            elif metric == "bilog_errors":
+                if failed_event(event):
+                    labels = labels_for(event, BILOG_ERROR_LABELS)
+                    self.inc("rgw_sync_bilog_errors_total", labels)
+                    self.set_gauge("rgw_sync_bilog_error_last_seen_timestamp_seconds", labels, now)
             elif metric == "lease":
                 self.inc("rgw_sync_lease_total", labels_for(event, LEASE_LABELS))
                 if failed_event(event):
@@ -339,10 +353,35 @@ def run_self_test():
         "unavailable_count": "1",
         "unavailable_age_seconds": 0.75,
     })
+    metrics.handle({
+        **base,
+        "metric": "bilog_errors",
+        "phase": "marker_finish",
+        "result": "retry",
+        "error": "ecanceled",
+        "bilog_op": "link_olh_del",
+        "op_state": "complete",
+        "failure_stage": "marker_finish",
+        "reason": "retryable",
+        "bucket": "grafana-tempo-prod",
+        "bucket_id": "c4083f74",
+        "data_shard": "118",
+        "bucket_shard": "13",
+        "shard": "13",
+        "versioned": "true",
+        "null_verid": "false",
+        "bilog_flags": "1",
+        "op_id": "13#00000113931.100704505.13",
+        "op_tag": "000000006a1da8c1jxcaoj3uhotooa5m",
+        "object": "single-tenant/example/bloom-1",
+        "object_instance": "instance",
+    })
 
     rendered = metrics.render()
     required = (
         "rgw_sync_error_last_seen_timestamp_seconds",
+        'rgw_sync_bilog_errors_total{realm="r",zonegroup="zg",source_zone="src",dest_zone="dst",sync_type="incremental",phase="marker_finish",result="retry",error="ecanceled",bucket="grafana-tempo-prod",bucket_id="c4083f74",data_shard="118",bucket_shard="13",shard="13",bilog_op="link_olh_del",op_state="complete",versioned="true",null_verid="false",bilog_flags="1",failure_stage="marker_finish",reason="retryable"} 1.0',
+        "rgw_sync_bilog_error_last_seen_timestamp_seconds",
         'rgw_sync_remote_request_failures_total{realm="r",zonegroup="zg",source_zone="src",dest_zone="dst",sync_type="incremental",phase="object_fetch",result="retry",error="ebusy",remote_op="object_fetch",failure_stage="remote_fetch_or_local_put",reason="retryable",data_shard="68"} 1.0',
         "rgw_sync_remote_request_last_failure_timestamp_seconds",
         'rgw_sync_lease_last_failure_timestamp_seconds{realm="r",zonegroup="zg",source_zone="src",dest_zone="dst",result="retry",error="ebusy",data_shard="68",shard="68"}',
