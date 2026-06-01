@@ -4388,6 +4388,15 @@ class RGWWriteBucketShardIncSyncStatus : public RGWCoroutine {
       yield call(new RGWSimpleRadosWriteAttrsCR(sync_env->dpp, sync_env->driver,
                                                 obj, attrs, &objv_tracker));
       if (retcode < 0) {
+        ldpp_dout(dpp, 0) << "RGW_SYNC_DEBUG_MARKER_WRITE_FAILURE"
+                          << " dest_zone=" << sync_env->svc->zone->zone_name()
+                          << " status_obj=" << obj
+                          << " marker_position=" << sync_marker.position
+                          << " marker_timestamp=" << sync_marker.timestamp
+                          << " ret=" << retcode
+                          << " error=" << cpp_strerror(-retcode)
+                          << " objv=" << objv_tracker
+                          << dendl;
         return set_cr_error(retcode);
       }
       if (stable_timestamp) {
