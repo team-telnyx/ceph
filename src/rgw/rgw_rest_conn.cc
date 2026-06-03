@@ -271,6 +271,52 @@ void RGWRESTConn::set_url_unconnectable(const std::string& endpoint)
                  << " url=" << endpoint << dendl;
 }
 
+bool RGWRESTConn::should_mark_url_unconnectable(const std::string& endpoint,
+                                                const char *source,
+                                                int ret,
+                                                long http_status,
+                                                int req_status,
+                                                const std::string& request) const
+{
+  if (ret != -ERR_INTERNAL_ERROR) {
+    return true;
+  }
+
+  if (!cct->_conf->rgw_sync_debug_observability ||
+      http_status < 500 || http_status >= 600 ||
+      req_status != -ERR_INTERNAL_ERROR) {
+    return true;
+  }
+
+  size_t unavailable_count = 0;
+  for (const auto& [url, status] : endpoints_status) {
+    if (!ceph::real_clock::is_zero(status.load())) {
+      unavailable_count++;
+    }
+  }
+
+  const auto endpoint_hash = endpoint.empty() ? std::string{"none"} : endpoint_hash_label(endpoint);
+  emit_endpoint_availability(cct, remote_id, "poison_skipped",
+                             "remote_http_5xx", "error", ret,
+                             endpoint_hash, endpoints.size(), unavailable_count);
+  ldout(cct, 0) << "RGW_SYNC_DEBUG_ENDPOINT_POISON_SKIPPED"
+                << " source=" << (source ? source : "unknown")
+                << " remote_id=" << remote_id
+                << " endpoint_hash=" << endpoint_hash
+                << " endpoint_count=" << endpoints.size()
+                << " unavailable_count=" << unavailable_count
+                << " ret=" << ret
+                << " ret_error=" << (ret < 0 ? cpp_strerror(-ret) : std::string{"none"})
+                << " http_status=" << http_status
+                << " req_status=" << req_status
+                << " req_error=" << (req_status < 0 ? cpp_strerror(-req_status) : std::string{"none"})
+                << " reason=remote_http_5xx"
+                << " request=" << request
+                << " url=" << endpoint
+                << dendl;
+  return false;
+}
+
 void RGWRESTConn::set_url_unconnectable(const std::string& endpoint,
                                         const char *source,
                                         int ret,

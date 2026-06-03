@@ -110,6 +110,12 @@ public:
                              long http_status,
                              int req_status,
                              const std::string& request);
+  bool should_mark_url_unconnectable(const std::string& endpoint,
+                                     const char *source,
+                                     int ret,
+                                     long http_status,
+                                     int req_status,
+                                     const std::string& request) const;
   const std::string& get_self_zonegroup() {
     return self_zone_group;
   }
@@ -363,7 +369,9 @@ public:
   int wait(const DoutPrefixProvider* dpp, bufferlist *pbl, optional_yield y) {
     int ret = req.wait(dpp, y);
     if (ret < 0) {
-      if (ret == -ERR_INTERNAL_ERROR) {
+      if (ret == -ERR_INTERNAL_ERROR &&
+          conn->should_mark_url_unconnectable(req.get_url_orig(), "RGWRESTReadResource::wait(bufferlist)",
+                                              ret, req.get_http_status(), req.get_status(), req.to_str())) {
         conn->set_url_unconnectable(req.get_url_orig(), "RGWRESTReadResource::wait(bufferlist)",
                                     ret, req.get_http_status(), req.get_status(), req.to_str());
       }
@@ -420,7 +428,9 @@ int RGWRESTReadResource::wait(const DoutPrefixProvider* dpp, T *dest,
 {
   int ret = req.wait(dpp, y);
   if (ret < 0) {
-    if (ret == -ERR_INTERNAL_ERROR) {
+    if (ret == -ERR_INTERNAL_ERROR &&
+        conn->should_mark_url_unconnectable(req.get_url_orig(), "RGWRESTReadResource::wait(decode)",
+                                            ret, req.get_http_status(), req.get_status(), req.to_str())) {
       conn->set_url_unconnectable(req.get_url_orig(), "RGWRESTReadResource::wait(decode)",
                                   ret, req.get_http_status(), req.get_status(), req.to_str());
     }
@@ -496,7 +506,9 @@ public:
     int ret = req.wait(dpp, y);
     *pbl = bl;
 
-    if (ret == -ERR_INTERNAL_ERROR) {
+    if (ret == -ERR_INTERNAL_ERROR &&
+        conn->should_mark_url_unconnectable(req.get_url_orig(), "RGWRESTSendResource::wait(bufferlist)",
+                                            ret, req.get_http_status(), req.get_status(), req.to_str())) {
       conn->set_url_unconnectable(req.get_url_orig(), "RGWRESTSendResource::wait(bufferlist)",
                                   ret, req.get_http_status(), req.get_status(), req.to_str());
     }
@@ -518,7 +530,9 @@ int RGWRESTSendResource::wait(const DoutPrefixProvider* dpp, T *dest,
                               optional_yield y, E *err_result)
 {
   int ret = req.wait(dpp, y);
-  if (ret == -ERR_INTERNAL_ERROR) {
+  if (ret == -ERR_INTERNAL_ERROR &&
+      conn->should_mark_url_unconnectable(req.get_url_orig(), "RGWRESTSendResource::wait(decode)",
+                                          ret, req.get_http_status(), req.get_status(), req.to_str())) {
     conn->set_url_unconnectable(req.get_url_orig(), "RGWRESTSendResource::wait(decode)",
                                 ret, req.get_http_status(), req.get_status(), req.to_str());
   }
