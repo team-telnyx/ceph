@@ -6750,8 +6750,9 @@ public:
 
   int operate(const DoutPrefixProvider *dpp) override {
     reenter(this) {
-      // Since all errors (except ECANCELED) are considered retryable,
-      // retry other errors so long as we're making progress.
+      // Retry errors so long as we're making progress. ECANCELED can happen
+      // when marker/status-object writes race with another sync worker; retry
+      // it here instead of aborting the whole bucket sync run immediately.
       for (retries = 0u, retcode = -EDOM;
 	   (retries < allowed_retries) && (retcode != 0);
 	   ++retries) {
@@ -6765,14 +6766,9 @@ public:
 					sc.env->sync_tracer->root_node,
 					&progress));
 
-	if (retcode == -ECANCELED) {
-	  ldpp_dout(dpp, -1) << "ERROR: Got -ECANCELED for "
-			     << pair.source_bs << dendl;
-	  drain_all();
-	  return set_cr_error(retcode);
-	} else if (retcode < 0) {
+	if (retcode < 0) {
 	  ldpp_dout(dpp, 5) << "WARNING: Got error, retcode=" << retcode << " for "
-			    << pair.source_bs << "on retry "
+			    << pair.source_bs << " on retry "
 			    << retries + 1 << " of " << allowed_retries
 			    << " allowed" << dendl;
 	  // Reset the retry counter if we made any progress
