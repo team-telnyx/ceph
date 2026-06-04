@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <boost/container/flat_set.hpp>
 #include <boost/format.hpp>
 #include <boost/optional.hpp>
@@ -117,6 +118,43 @@
 
 using namespace std;
 using namespace librados;
+
+namespace {
+
+using SyncDebugStageObserver = std::function<void(const char*, int, double)>;
+
+thread_local SyncDebugStageObserver* sync_debug_stage_observer = nullptr;
+
+class ScopedSyncDebugStageObserver {
+ public:
+  explicit ScopedSyncDebugStageObserver(SyncDebugStageObserver* observer)
+    : previous(sync_debug_stage_observer)
+  {
+    sync_debug_stage_observer = observer;
+  }
+
+  ~ScopedSyncDebugStageObserver()
+  {
+    sync_debug_stage_observer = previous;
+  }
+
+ private:
+  SyncDebugStageObserver* previous;
+};
+
+void emit_sync_debug_stage(const char *stage, int ret,
+                           ceph::coarse_mono_time start)
+{
+  if (!sync_debug_stage_observer || !*sync_debug_stage_observer) {
+    return;
+  }
+
+  const double duration = std::chrono::duration<double>(
+      ceph::coarse_mono_clock::now() - start).count();
+  (*sync_debug_stage_observer)(stage, ret, duration);
+}
+
+} // anonymous namespace
 
 #define ldout_bitx(_bitx, _dpp, _level) if(_bitx) { ldpp_dout(_dpp, 0) << "BITX: "
 #define ldout_bitx_c(_bitx, _ctx, _level) if(_bitx) { ldout(_ctx, 0) << "BITX: "
@@ -3230,6 +3268,8 @@ int RGWRados::Object::Write::_do_write_meta(uint64_t size, uint64_t accounted_si
         ceph::coarse_mono_clock::now() - start).count();
     meta.sync_debug_stage_observer(stage, ret, duration);
   };
+  ScopedSyncDebugStageObserver scoped_sync_debug_stage_observer(
+      &meta.sync_debug_stage_observer);
 
   ObjectWriteOperation op;
 #ifdef WITH_LTTNG
@@ -6939,8 +6979,10 @@ int RGWRados::get_olh_target_state(const DoutPrefixProvider *dpp, RGWObjectCtx&
   ceph_assert(olh_state->is_olh);
 
   rgw_obj target;
+  auto stage_start = ceph::coarse_mono_clock::now();
   int r = RGWRados::follow_olh(dpp, bucket_info, obj_ctx, olh_state,
                                obj, &target, y); /* might return -EAGAIN */
+  emit_sync_debug_stage("get_olh_target_follow_olh", r, stage_start);
   if (r < 0) {
     return r;
   }
@@ -6950,7 +6992,10 @@ int RGWRados::get_olh_target_state(const DoutPrefixProvider *dpp, RGWObjectCtx&
     obj_ctx.set_prefetch_data(target);
   }
 
-  return get_obj_state(dpp, &obj_ctx, bucket_info, target, psm, false, y);
+  stage_start = ceph::coarse_mono_clock::now();
+  r = get_obj_state(dpp, &obj_ctx, bucket_info, target, psm, false, y);
+  emit_sync_debug_stage("get_olh_target_get_target_state", r, stage_start);
+  return r;
 }
 
 int RGWRados::get_obj_state_impl(const DoutPrefixProvider *dpp, RGWObjectCtx *octx,
@@ -6970,7 +7015,10 @@ int RGWRados::get_obj_state_impl(const DoutPrefixProvider *dpp, RGWObjectCtx *oc
   *psm = sm;
   if (s->has_attrs) {
     if (s->is_olh && need_follow_olh) {
-      return get_olh_target_state(dpp, *octx, bucket_info, obj, s, psm, y);
+      auto stage_start = ceph::coarse_mono_clock::now();
+      int r = get_olh_target_state(dpp, *octx, bucket_info, obj, s, psm, y);
+      emit_sync_debug_stage("get_obj_state_cached_olh_target", r, stage_start);
+      return r;
     }
     return 0;
   }
@@ -6983,7 +7031,9 @@ int RGWRados::get_obj_state_impl(const DoutPrefixProvider *dpp, RGWObjectCtx *oc
   int r = -ENOENT;
 
   if (!assume_noent) {
+    auto stage_start = ceph::coarse_mono_clock::now();
     r = RGWRados::raw_obj_stat(dpp, raw_obj, &s->size, &s->mtime, &s->epoch, &s->attrset, (s->prefetch_data ? &s->data : NULL), &s->objv_tracker, y);
+    emit_sync_debug_stage("get_obj_state_raw_obj_stat", r, stage_start);
   }
 
   if (r == -ENOENT) {
@@ -7121,7 +7171,10 @@ int RGWRados::get_obj_state_impl(const DoutPrefixProvider *dpp, RGWObjectCtx *oc
     ldpp_dout(dpp, 20) << __func__ << ": setting s->olh_tag to " << string(s->olh_tag.c_str(), s->olh_tag.length()) << dendl;
 
     if (need_follow_olh) {
-      return get_olh_target_state(dpp, *octx, bucket_info, obj, s, psm, y);
+      auto stage_start = ceph::coarse_mono_clock::now();
+      int r = get_olh_target_state(dpp, *octx, bucket_info, obj, s, psm, y);
+      emit_sync_debug_stage("get_obj_state_olh_target", r, stage_start);
+      return r;
     } else if (obj.key.have_null_instance() && !sm->manifest) {
       // read null version, and the head object only have olh info
       s->exists = false;
@@ -9479,13 +9532,17 @@ int RGWRados::update_olh(const DoutPrefixProvider* dpp,
   uint64_t ver_marker = 0;
 
   do {
+    auto stage_start = ceph::coarse_mono_clock::now();
     int ret = bucket_index_read_olh_log(dpp, bucket_info, *state, obj, ver_marker, &log, &is_truncated, y);
+    emit_sync_debug_stage("update_olh_read_log", ret, stage_start);
     if (ret < 0) {
       return ret;
     }
+    stage_start = ceph::coarse_mono_clock::now();
     ret = apply_olh_log(dpp, obj_ctx, *state, bucket_info, obj,
 			state->olh_tag, log, &ver_marker, y,
 			null_verid, zones_trace, log_op, force);
+    emit_sync_debug_stage("update_olh_apply_log", ret, stage_start);
     if (ret < 0) {
       return ret;
     }
@@ -9519,12 +9576,16 @@ int RGWRados::set_olh(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
       obj_ctx.invalidate(olh_obj);
     }
 
+    auto stage_start = ceph::coarse_mono_clock::now();
     ret = get_obj_state(dpp, &obj_ctx, bucket_info, olh_obj, &state, &manifest, false, y); /* don't follow olh */
+    emit_sync_debug_stage("set_olh_get_state", ret, stage_start);
     if (ret < 0) {
       return ret;
     }
 
+    stage_start = ceph::coarse_mono_clock::now();
     ret = olh_init_modification(dpp, bucket_info, *state, olh_obj, &op_tag, y);
+    emit_sync_debug_stage("set_olh_init_modification", ret, stage_start);
     if (ret < 0) {
       ldpp_dout(dpp, 20) << "olh_init_modification() target_obj=" << target_obj << " delete_marker=" << (int)delete_marker << " returned " << ret << dendl;
       if (ret == -ECANCELED) {
@@ -9536,17 +9597,23 @@ int RGWRados::set_olh(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
       // fail here to simulate the scenario of an unlinked object instance
       ret = -cct->_conf->rgw_debug_inject_set_olh_err;
     } else {
+      stage_start = ceph::coarse_mono_clock::now();
       ret = bucket_index_link_olh(dpp, bucket_info, *state, target_obj,
 		                              delete_marker, op_tag, meta, olh_epoch, unmod_since,
 		                              high_precision_time, y, zones_trace, log_data_change);
+      emit_sync_debug_stage("set_olh_bucket_index_link", ret, stage_start);
     }
     if (ret < 0) {
       ldpp_dout(dpp, 20) << "bucket_index_link_olh() target_obj=" << target_obj << " delete_marker=" << (int)delete_marker << " returned " << ret << dendl;
+      stage_start = ceph::coarse_mono_clock::now();
       olh_cancel_modification(dpp, bucket_info, *state, olh_obj, op_tag, y);
+      emit_sync_debug_stage("set_olh_cancel_modification", 0, stage_start);
       if (ret == -ECANCELED) {
         // the bucket index rejected the link_olh() due to olh tag mismatch;
         // attempt to reconstruct olh head attributes based on the bucket index
+        stage_start = ceph::coarse_mono_clock::now();
         int r2 = repair_olh(dpp, state, bucket_info, olh_obj, y);
+        emit_sync_debug_stage("set_olh_repair_olh", r2, stage_start);
         if (r2 < 0 && r2 != -ECANCELED) {
           return r2;
         }
@@ -9556,7 +9623,9 @@ int RGWRados::set_olh(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
       // object from being cleaned by another thread that was deleting the last
       // existing version. We invoke a best-effort update_olh here to handle this case.
       if (! skip_olh_obj_update) {
+        stage_start = ceph::coarse_mono_clock::now();
         int r = update_olh(dpp, obj_ctx, state, bucket_info, olh_obj, y, zones_trace, log_data_change);
+        emit_sync_debug_stage("set_olh_error_update_olh", r, stage_start);
         if (r < 0 && r != -ECANCELED) {
           ldpp_dout(dpp, 20) << "update_olh() target_obj=" << olh_obj << " returned " << r << dendl;
         }
@@ -9577,7 +9646,9 @@ int RGWRados::set_olh(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
     return 0;
   }
 
+  auto stage_start = ceph::coarse_mono_clock::now();
   ret = update_olh(dpp, obj_ctx, state, bucket_info, olh_obj, y, zones_trace, log_data_change);
+  emit_sync_debug_stage("set_olh_update_olh", ret, stage_start);
   if (ret == -ECANCELED) { /* already did what we needed, no need to retry, raced with another user */
     ret = 0;
   }
@@ -9797,13 +9868,19 @@ int RGWRados::remove_olh_pending_entries(const DoutPrefixProvider *dpp, const RG
 int RGWRados::follow_olh(const DoutPrefixProvider *dpp, RGWBucketInfo& bucket_info, RGWObjectCtx& obj_ctx, RGWObjState *state, const rgw_obj& olh_obj, rgw_obj *target, optional_yield y)
 {
   map<string, bufferlist> pending_entries;
+  auto stage_start = ceph::coarse_mono_clock::now();
   rgw_filter_attrset(state->attrset, RGW_ATTR_OLH_PENDING_PREFIX, &pending_entries);
+  emit_sync_debug_stage("follow_olh_filter_pending", 0, stage_start);
 
   map<string, bufferlist> rm_pending_entries;
+  stage_start = ceph::coarse_mono_clock::now();
   check_pending_olh_entries(dpp, pending_entries, &rm_pending_entries);
+  emit_sync_debug_stage("follow_olh_check_pending", 0, stage_start);
 
   if (!rm_pending_entries.empty()) {
+    stage_start = ceph::coarse_mono_clock::now();
     int ret = remove_olh_pending_entries(dpp, bucket_info, *state, olh_obj, rm_pending_entries, y);
+    emit_sync_debug_stage("follow_olh_remove_pending", ret, stage_start);
     if (ret < 0) {
       ldpp_dout(dpp, 20) << "ERROR: rm_pending_entries returned ret=" << ret << dendl;
       return ret;
@@ -9812,7 +9889,9 @@ int RGWRados::follow_olh(const DoutPrefixProvider *dpp, RGWBucketInfo& bucket_in
   if (!pending_entries.empty()) {
     ldpp_dout(dpp, 20) << __func__ << "(): found pending entries, need to update_olh() on bucket=" << olh_obj.bucket << dendl;
 
+    stage_start = ceph::coarse_mono_clock::now();
     int ret = update_olh(dpp, obj_ctx, state, bucket_info, olh_obj, y);
+    emit_sync_debug_stage("follow_olh_update_olh", ret, stage_start);
     if (ret < 0) {
       if (ret == -ECANCELED) {
         // In this context, ECANCELED means that the OLH tag changed in either the bucket index entry or the OLH object.
