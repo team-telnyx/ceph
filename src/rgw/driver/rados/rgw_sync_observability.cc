@@ -305,10 +305,18 @@ void emit(const DoutPrefixProvider *dpp, RGWDataSyncCtx *sc, Event event)
   payload << '{';
   append_json_field(payload, "event", "rgw_sync", &first);
   append_json_field(payload, "metric", event.metric, &first);
-  append_json_field(payload, "realm", sc->env->svc->zone->get_realm().get_name(), &first);
-  append_json_field(payload, "zonegroup", sc->env->svc->zone->get_zonegroup().get_name(), &first);
-  append_json_field(payload, "source_zone", zone_name_or_id(sc, sc->source_zone), &first);
-  append_json_field(payload, "dest_zone", sc->env->svc->zone->zone_name(), &first);
+  append_json_field(payload, "realm",
+                    event.realm.empty() ? sc->env->svc->zone->get_realm().get_name() : event.realm,
+                    &first);
+  append_json_field(payload, "zonegroup",
+                    event.zonegroup.empty() ? sc->env->svc->zone->get_zonegroup().get_name() : event.zonegroup,
+                    &first);
+  append_json_field(payload, "source_zone",
+                    event.source_zone.empty() ? zone_name_or_id(sc, sc->source_zone) : event.source_zone,
+                    &first);
+  append_json_field(payload, "dest_zone",
+                    event.dest_zone.empty() ? sc->env->svc->zone->zone_name() : event.dest_zone,
+                    &first);
   append_json_field(payload, "sync_type", event.sync_type, &first);
   append_json_field(payload, "phase", event.phase, &first);
   append_json_field(payload, "result", event.result, &first);
@@ -414,6 +422,18 @@ void emit(const DoutPrefixProvider *dpp, CephContext *cct, Event event)
   payload << '{';
   append_json_field(payload, "event", "rgw_sync", &first);
   append_json_field(payload, "metric", event.metric, &first);
+  if (!event.realm.empty()) {
+    append_json_field(payload, "realm", event.realm, &first);
+  }
+  if (!event.zonegroup.empty()) {
+    append_json_field(payload, "zonegroup", event.zonegroup, &first);
+  }
+  if (!event.source_zone.empty()) {
+    append_json_field(payload, "source_zone", event.source_zone, &first);
+  }
+  if (!event.dest_zone.empty()) {
+    append_json_field(payload, "dest_zone", event.dest_zone, &first);
+  }
   append_json_field(payload, "sync_type", event.sync_type, &first);
   append_json_field(payload, "phase", event.phase, &first);
   append_json_field(payload, "result", event.result, &first);

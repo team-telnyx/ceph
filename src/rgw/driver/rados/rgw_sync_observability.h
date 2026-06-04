@@ -15,6 +15,10 @@ struct rgw_bucket_shard;
 namespace rgw::sync_observability {
 
 struct Event {
+  std::string realm;
+  std::string zonegroup;
+  std::string source_zone;
+  std::string dest_zone;
   std::string metric;
   std::string sync_type = "unknown";
   std::string phase = "unknown";

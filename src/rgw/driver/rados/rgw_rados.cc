@@ -10,6 +10,8 @@
 #include <boost/algorithm/string.hpp>
 #include <string_view>
 
+#include <algorithm>
+#include <chrono>
 #include <boost/container/flat_set.hpp>
 #include <boost/format.hpp>
 #include <boost/optional.hpp>
@@ -77,6 +79,7 @@
 #include "rgw_object_expirer_core.h"
 #include "rgw_sync.h"
 #include "rgw_sync_counters.h"
+#include "rgw_sync_observability.h"
 #include "rgw_sync_trace.h"
 #include "rgw_trim_datalog.h"
 #include "rgw_trim_mdlog.h"
@@ -4436,6 +4439,48 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
     "object(src={}:{}, dest={}:{})", src_obj.bucket.bucket_id, src_obj.key.name,
     dest_obj.bucket.bucket_id, dest_obj.key.name
   );
+  const auto short_bucket_id = [](const std::string& bucket_id) {
+    if (bucket_id.empty()) {
+      return std::string{"unknown"};
+    }
+    return bucket_id.substr(0, std::min<std::size_t>(bucket_id.size(), 8));
+  };
+  const auto source_zone_label = [&]() {
+    if (source_zone.empty()) {
+      return std::string{"master"};
+    }
+    if (auto zone = svc.zone->find_zone(source_zone)) {
+      return zone->name;
+    }
+    return source_zone.id.empty() ? std::string{"unknown"} : source_zone.id;
+  };
+  const auto emit_fetch_stage = [&](const char *stage, int stage_ret,
+                                    ceph::coarse_mono_time stage_start) {
+    if (!rgw::sync_observability::bucket_debug_enabled(cct, src_obj.bucket.name)) {
+      return;
+    }
+
+    rgw::sync_observability::Event event;
+    event.realm = svc.zone->get_realm().get_name();
+    event.zonegroup = svc.zone->get_zonegroup().get_name();
+    event.source_zone = source_zone_label();
+    event.dest_zone = svc.zone->zone_name();
+    event.metric = "remote_requests";
+    event.sync_type = "unknown";
+    event.phase = "object_fetch_stage";
+    event.remote_op = stage;
+    event.result = rgw::sync_observability::result_label(stage_ret);
+    event.error = rgw::sync_observability::error_label(stage_ret);
+    if (stage_ret < 0) {
+      event.failure_stage = stage;
+      event.reason = rgw::sync_observability::reason_label(stage_ret);
+    }
+    event.bucket = src_obj.bucket.name.empty() ? "unknown" : src_obj.bucket.name;
+    event.bucket_id = short_bucket_id(src_obj.bucket.bucket_id);
+    event.duration_seconds = std::chrono::duration<double>(
+      ceph::coarse_mono_clock::now() - stage_start).count();
+    rgw::sync_observability::emit(rctx.dpp, cct, std::move(event));
+  };
 
   // use an empty owner until we decode RGW_ATTR_ACL
   ACLOwner owner;
@@ -4557,7 +4602,9 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   if (copy_if_newer) {
     /* need to get mtime for destination */
     fetch_stage = "dest_state";
+    auto stage_start = ceph::coarse_mono_clock::now();
     ret = get_obj_state(rctx.dpp, &dest_obj_ctx, dest_bucket_info, stat_dest_obj, &dest_state, &manifest, stat_follow_olh, rctx.y);
+    emit_fetch_stage(fetch_stage, ret, stage_start);
     if (ret < 0)
       goto set_err_state;
 
@@ -4577,6 +4624,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   static constexpr int NUM_ENPOINT_IOERROR_RETRIES = 20;
   for (int tries = 0; tries < NUM_ENPOINT_IOERROR_RETRIES; tries++) {
     fetch_stage = "remote_get_send";
+    auto stage_start = ceph::coarse_mono_clock::now();
     const bool force_fetch = cct->_conf->rgw_sync_recovery_force_fetch;
     rgw_zone_set_entry *trace_condition =
       force_fetch ? nullptr : &dst_zone_trace;
@@ -4595,13 +4643,16 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
                         sync_manifest, skip_decrypt, trace_condition,
                         sync_cloudtiered, true,
                         &cb, &in_stream_req);
+    emit_fetch_stage(fetch_stage, ret, stage_start);
     if (ret < 0) {
       goto set_err_state;
     }
 
     fetch_stage = "remote_get_complete";
+    stage_start = ceph::coarse_mono_clock::now();
     ret = conn->complete_request(rctx.dpp, in_stream_req, &etag, &set_mtime,
                                  &accounted_size, nullptr, nullptr, rctx.y);
+    emit_fetch_stage(fetch_stage, ret, stage_start);
     if (ret < 0) {
       if (ret == -ERR_INTERNAL_ERROR && tries < NUM_ENPOINT_IOERROR_RETRIES - 1) {
         ldpp_dout(rctx.dpp, 20) << __func__ << "(): failed to fetch " << fetched_obj
@@ -4613,7 +4664,9 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
     break;
   }
   fetch_stage = "remote_stream_flush";
+  auto stage_start = ceph::coarse_mono_clock::now();
   ret = cb.flush();
+  emit_fetch_stage(fetch_stage, ret, stage_start);
   if (ret < 0) {
     goto set_err_state;
   }
@@ -4654,7 +4707,9 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   // decode the ACLOwner from RGW_ATTR_ACL for the bucket index
   if (auto i = cb.get_attrs().find(RGW_ATTR_ACL); i != cb.get_attrs().end()) {
     fetch_stage = "decode_acl";
+    stage_start = ceph::coarse_mono_clock::now();
     ret = decode_policy(rctx.dpp, i->second, &owner);
+    emit_fetch_stage(fetch_stage, ret, stage_start);
     if (ret < 0) {
       goto set_err_state;
     }
@@ -4789,10 +4844,12 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   for (i = 0; i < MAX_COMPLETE_RETRY; i++) {
     bool canceled = false;
     fetch_stage = "index_complete";
+    stage_start = ceph::coarse_mono_clock::now();
     ret = processor.complete(accounted_size, etag, mtime, set_mtime,
                              attrs, rgw::cksum::no_cksum, delete_at, nullptr, nullptr,
 			     nullptr, zones_trace, &canceled, rctx,
 			     rgw::sal::FLAG_LOG_OP);
+    emit_fetch_stage(fetch_stage, ret, stage_start);
     if (ret < 0) {
       goto set_err_state;
     }
