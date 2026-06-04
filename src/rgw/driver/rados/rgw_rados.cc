@@ -3317,14 +3317,21 @@ int RGWRados::Object::Write::_do_write_meta(uint64_t size, uint64_t accounted_si
   target->manifest = manifest;
   target->state = state;
   RGWObjState* current_state = target->state;
+  const bool needs_current_version_preconditions =
+      meta.if_match != nullptr || meta.if_nomatch != nullptr;
   if (!target->obj.key.instance.empty()) {
-    stage_start = ceph::coarse_mono_clock::now();
-    r = target->get_current_version_state(rctx.dpp, current_state, rctx.y);
-    emit_stage("write_meta_current_version_state", r, stage_start);
-    if (r == -ENOENT) {
-      current_state = target->state;
-    } else if (r < 0) {
-      return r;
+    if (meta.sync_debug_stage_observer && !needs_current_version_preconditions) {
+      stage_start = ceph::coarse_mono_clock::now();
+      emit_stage("write_meta_current_version_state_skipped", 0, stage_start);
+    } else {
+      stage_start = ceph::coarse_mono_clock::now();
+      r = target->get_current_version_state(rctx.dpp, current_state, rctx.y);
+      emit_stage("write_meta_current_version_state", r, stage_start);
+      if (r == -ENOENT) {
+        current_state = target->state;
+      } else if (r < 0) {
+        return r;
+      }
     }
   }
 
