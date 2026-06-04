@@ -5,6 +5,7 @@ import json
 import os
 import socket
 import threading
+import time
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -19,8 +20,40 @@ DEFAULT_LABELS = (
     "result",
     "error",
 )
-DEBUG_LABELS = ("bucket", "bucket_id", "shard")
+DEBUG_LABELS = ("bucket", "bucket_id", "data_shard", "bucket_shard", "shard")
 REMOTE_LABELS = DEFAULT_LABELS + ("remote_op",)
+REMOTE_FAILURE_LABELS = REMOTE_LABELS + ("failure_stage", "reason")
+FAILURE_LABELS = DEFAULT_LABELS + ("operation", "op_state", "failure_stage", "reason")
+ERROR_LABELS = FAILURE_LABELS + DEBUG_LABELS
+BILOG_ERROR_LABELS = DEFAULT_LABELS + DEBUG_LABELS + (
+    "bilog_op",
+    "op_state",
+    "versioned",
+    "null_verid",
+    "bilog_flags",
+    "failure_stage",
+    "reason",
+)
+LEASE_LABELS = ("realm", "zonegroup", "source_zone", "dest_zone", "result", "error")
+LEASE_SHARD_LABELS = LEASE_LABELS + ("data_shard", "shard")
+MARKER_LABELS = ("realm", "zonegroup", "source_zone", "dest_zone", "sync_type", "data_shard", "shard")
+ENDPOINT_LABELS = (
+    "remote_id",
+    "endpoint_event",
+    "reason",
+    "result",
+    "error",
+    "endpoint_hash",
+    "endpoint_count",
+)
+ENDPOINT_COUNT_LABELS = (
+    "remote_id",
+    "endpoint_event",
+    "reason",
+    "result",
+    "error",
+    "endpoint_count",
+)
 HISTOGRAM_BUCKETS = (0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 900.0)
 
 
@@ -50,6 +83,16 @@ def labels_text(labels):
     if not labels:
         return ""
     return "{" + ",".join(f'{name}="{escape_label(value)}"' for name, value in labels) + "}"
+
+
+def failed_event(event):
+    result = event.get("result")
+    error = event.get("error")
+    if result in ("success", "skipped"):
+        return False
+    if result in ("retry", "error"):
+        return True
+    return error not in (None, "", "none", "unknown")
 
 
 class Metrics:
@@ -105,6 +148,7 @@ class Metrics:
         metric = event.get("metric")
         duration = event.get("duration_seconds")
         value = event.get("value")
+        now = time.time()
 
         with self.lock:
             if metric == "entries":
@@ -117,18 +161,57 @@ class Metrics:
                 self.inc("rgw_sync_remote_requests_total", labels)
                 if duration is not None:
                     self.observe("rgw_sync_remote_request_duration_seconds", labels, duration)
+                if failed_event(event):
+                    failure_labels = labels_for(event, REMOTE_FAILURE_LABELS)
+                    self.inc("rgw_sync_remote_request_failures_total", failure_labels)
+                    self.set_gauge(
+                        "rgw_sync_remote_request_last_failure_timestamp_seconds",
+                        failure_labels,
+                        now,
+                    )
             elif metric == "retries":
                 self.inc("rgw_sync_retries_total", labels_for(event, DEFAULT_LABELS))
             elif metric == "errors":
-                self.inc("rgw_sync_errors_total", labels_for(event, DEFAULT_LABELS))
+                if failed_event(event):
+                    labels = labels_for(event, ERROR_LABELS)
+                    self.inc("rgw_sync_errors_total", labels)
+                    self.set_gauge("rgw_sync_error_last_seen_timestamp_seconds", labels, now)
+            elif metric == "bilog_errors":
+                if failed_event(event):
+                    labels = labels_for(event, BILOG_ERROR_LABELS)
+                    self.inc("rgw_sync_bilog_errors_total", labels)
+                    self.set_gauge("rgw_sync_bilog_error_last_seen_timestamp_seconds", labels, now)
             elif metric == "lease":
-                lease_labels = ("realm", "zonegroup", "source_zone", "dest_zone", "result", "error")
-                self.inc("rgw_sync_lease_total", labels_for(event, lease_labels))
+                self.inc("rgw_sync_lease_total", labels_for(event, LEASE_LABELS))
+                if failed_event(event):
+                    self.set_gauge(
+                        "rgw_sync_lease_last_failure_timestamp_seconds",
+                        labels_for(event, LEASE_SHARD_LABELS),
+                        now,
+                    )
             elif metric == "shard_marker_lag" and value is not None:
-                marker_labels = ("realm", "zonegroup", "source_zone", "dest_zone", "sync_type", "shard")
-                self.set_gauge("rgw_sync_shard_marker_lag_seconds", labels_for(event, marker_labels), value)
+                self.set_gauge("rgw_sync_shard_marker_lag_seconds", labels_for(event, MARKER_LABELS), value)
             elif metric == "debug_bucket_shard_state" and value is not None:
                 self.set_gauge("rgw_sync_debug_bucket_shard_state", labels_for(event, DEFAULT_LABELS), value)
+            elif metric == "endpoint_availability":
+                labels = labels_for(event, ENDPOINT_LABELS)
+                count_labels = labels_for(event, ENDPOINT_COUNT_LABELS)
+                self.inc("rgw_sync_endpoint_availability_events_total", labels)
+                self.set_gauge("rgw_sync_endpoint_availability_last_seen_timestamp_seconds", labels, now)
+                unavailable_count = event.get("unavailable_count")
+                if unavailable_count is not None:
+                    self.set_gauge(
+                        "rgw_sync_endpoint_unavailable_count",
+                        count_labels,
+                        unavailable_count,
+                    )
+                unavailable_age = event.get("unavailable_age_seconds")
+                if unavailable_age is not None:
+                    self.set_gauge(
+                        "rgw_sync_endpoint_unavailable_age_seconds",
+                        labels,
+                        unavailable_age,
+                    )
             else:
                 self.bad_events += 1
 
@@ -200,12 +283,130 @@ def datagram_loop(path, metrics):
                 metrics.bad_events += 1
 
 
+def run_self_test():
+    metrics = Metrics(max_series=1000)
+    base = {
+        "realm": "r",
+        "zonegroup": "zg",
+        "source_zone": "src",
+        "dest_zone": "dst",
+        "sync_type": "incremental",
+    }
+    metrics.handle({
+        **base,
+        "metric": "errors",
+        "phase": "object_sync",
+        "result": "retry",
+        "error": "ebusy",
+        "operation": "write",
+        "op_state": "link_olh",
+        "failure_stage": "remote_fetch_or_local_put",
+        "reason": "retryable",
+        "bucket": "example",
+        "bucket_id": "abcd1234",
+        "data_shard": "68",
+        "bucket_shard": "7",
+        "shard": "7",
+    })
+    metrics.handle({
+        **base,
+        "metric": "remote_requests",
+        "phase": "object_fetch",
+        "result": "retry",
+        "error": "ebusy",
+        "remote_op": "object_fetch",
+        "failure_stage": "remote_fetch_or_local_put",
+        "reason": "retryable",
+        "data_shard": "68",
+        "duration_seconds": 1.25,
+    })
+    metrics.handle({
+        **base,
+        "metric": "lease",
+        "phase": "lease",
+        "result": "retry",
+        "error": "ebusy",
+        "data_shard": "68",
+        "shard": "68",
+    })
+    metrics.handle({
+        **base,
+        "metric": "shard_marker_lag",
+        "phase": "marker",
+        "result": "success",
+        "error": "none",
+        "data_shard": "68",
+        "shard": "68",
+        "value": 120.0,
+    })
+    metrics.handle({
+        "metric": "endpoint_availability",
+        "sync_type": "remote",
+        "phase": "endpoint",
+        "result": "error",
+        "error": "errno_22",
+        "remote_id": "mn1-zone-id",
+        "endpoint_event": "no_usable_endpoint",
+        "reason": "all_endpoints_unconnectable",
+        "endpoint_hash": "all",
+        "endpoint_count": "1",
+        "unavailable_count": "1",
+        "unavailable_age_seconds": 0.75,
+    })
+    metrics.handle({
+        **base,
+        "metric": "bilog_errors",
+        "phase": "marker_finish",
+        "result": "retry",
+        "error": "ecanceled",
+        "bilog_op": "link_olh_del",
+        "op_state": "complete",
+        "failure_stage": "marker_finish",
+        "reason": "retryable",
+        "bucket": "grafana-tempo-prod",
+        "bucket_id": "c4083f74",
+        "data_shard": "118",
+        "bucket_shard": "13",
+        "shard": "13",
+        "versioned": "true",
+        "null_verid": "false",
+        "bilog_flags": "1",
+        "op_id": "13#00000113931.100704505.13",
+        "op_tag": "000000006a1da8c1jxcaoj3uhotooa5m",
+        "object": "single-tenant/example/bloom-1",
+        "object_instance": "instance",
+    })
+
+    rendered = metrics.render()
+    required = (
+        "rgw_sync_error_last_seen_timestamp_seconds",
+        'rgw_sync_bilog_errors_total{realm="r",zonegroup="zg",source_zone="src",dest_zone="dst",sync_type="incremental",phase="marker_finish",result="retry",error="ecanceled",bucket="grafana-tempo-prod",bucket_id="c4083f74",data_shard="118",bucket_shard="13",shard="13",bilog_op="link_olh_del",op_state="complete",versioned="true",null_verid="false",bilog_flags="1",failure_stage="marker_finish",reason="retryable"} 1.0',
+        "rgw_sync_bilog_error_last_seen_timestamp_seconds",
+        'rgw_sync_remote_request_failures_total{realm="r",zonegroup="zg",source_zone="src",dest_zone="dst",sync_type="incremental",phase="object_fetch",result="retry",error="ebusy",remote_op="object_fetch",failure_stage="remote_fetch_or_local_put",reason="retryable",data_shard="68"} 1.0',
+        "rgw_sync_remote_request_last_failure_timestamp_seconds",
+        'rgw_sync_lease_last_failure_timestamp_seconds{realm="r",zonegroup="zg",source_zone="src",dest_zone="dst",result="retry",error="ebusy",data_shard="68",shard="68"}',
+        'rgw_sync_shard_marker_lag_seconds{realm="r",zonegroup="zg",source_zone="src",dest_zone="dst",sync_type="incremental",data_shard="68",shard="68"} 120.0',
+        'rgw_sync_endpoint_availability_events_total{remote_id="mn1-zone-id",endpoint_event="no_usable_endpoint",reason="all_endpoints_unconnectable",result="error",error="errno_22",endpoint_hash="all",endpoint_count="1"} 1.0',
+        "rgw_sync_endpoint_availability_last_seen_timestamp_seconds",
+        'rgw_sync_endpoint_unavailable_count{remote_id="mn1-zone-id",endpoint_event="no_usable_endpoint",reason="all_endpoints_unconnectable",result="error",error="errno_22",endpoint_count="1"} 1.0',
+        'rgw_sync_endpoint_unavailable_age_seconds{remote_id="mn1-zone-id",endpoint_event="no_usable_endpoint",reason="all_endpoints_unconnectable",result="error",error="errno_22",endpoint_hash="all",endpoint_count="1"} 0.75',
+    )
+    missing = [item for item in required if item not in rendered]
+    if missing:
+        raise AssertionError("missing expected metrics: " + ", ".join(missing))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Prometheus exporter for RGW sync debug events")
     parser.add_argument("--socket", default=os.environ.get("RGW_SYNC_EXPORTER_SOCKET", "/run/ceph/rgw-sync-debug.sock"))
     parser.add_argument("--listen", default=os.environ.get("RGW_SYNC_EXPORTER_LISTEN", "0.0.0.0:9284"))
     parser.add_argument("--max-series", type=int, default=int(os.environ.get("RGW_SYNC_EXPORTER_MAX_SERIES", "20000")))
+    parser.add_argument("--self-test", action="store_true", help="run exporter metric mapping self-test and exit")
     args = parser.parse_args()
+
+    if args.self_test:
+        run_self_test()
+        return
 
     host, port = args.listen.rsplit(":", 1)
     metrics = Metrics(args.max_series)

@@ -844,6 +844,7 @@ public:
         bool keep_tail;
         bool completeMultipart;
         bool appendable;
+        std::function<void(const char*, int, double)> sync_debug_stage_observer;
 
         MetaParams() : mtime(NULL), rmattrs(NULL), data(NULL), manifest(NULL), ptag(NULL),
                  remove_objs(NULL), category(RGWObjCategory::Main), flags(0),

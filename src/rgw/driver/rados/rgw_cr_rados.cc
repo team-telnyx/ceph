@@ -849,7 +849,21 @@ int RGWAsyncFetchRemoteObj::_send_request(const DoutPrefixProvider *dpp)
                        keep_tags);
 
   if (r < 0) {
-    ldpp_dout(dpp, 0) << "store->fetch_remote_obj() returned r=" << r << dendl;
+    ldpp_dout(dpp, 0) << "store->fetch_remote_obj() returned r=" << r
+                       << " source_zone=" << source_zone
+                       << " src_bucket=" << src_bucket.name
+                       << " src_bucket_id=" << src_bucket.bucket_id
+                       << " src_key=" << key
+                       << " src_instance=" << key.instance
+                       << " dest_bucket=" << dest_bucket_info.bucket.name
+                       << " dest_bucket_id=" << dest_bucket_info.bucket.bucket_id
+                       << " dest_key=" << dest_obj.get_key()
+                       << " dest_instance=" << dest_obj.get_key().instance
+                       << " versioned_epoch=" << versioned_epoch.value_or(0)
+                       << " copy_if_newer=" << (int)copy_if_newer
+                       << " stat_follow_olh=" << (int)stat_follow_olh
+                       << " keep_tags=" << (int)keep_tags
+                       << dendl;
     if (counters) {
       counters->inc(sync_counters::l_fetch_err, 1);
     }

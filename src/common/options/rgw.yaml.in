@@ -2729,7 +2729,8 @@ options:
   desc: Comma-separated bucket names allowed to use bucket and shard debug labels.
   long_desc: Bucket and shard labels can create high Prometheus cardinality.
     Leave this empty by default and only set it for incident canaries or known
-    buckets under investigation.
+    buckets under investigation. Use * only for short-lived canaries with a
+    bounded exporter series limit.
   default: '""'
   services:
   - rgw
@@ -2748,6 +2749,36 @@ options:
   - rgw
   see_also:
   - rgw_sync_debug_observability
+  with_legacy: true
+- name: rgw_sync_recovery_force_fetch
+  type: bool
+  level: dev
+  desc: Force RGW multisite sync to fetch remote object bodies.
+  long_desc: When enabled, data sync does not send the
+    rgwx-if-not-replicated-to condition on remote object fetches. This is an
+    incident recovery option for stale or incorrect object replication-trace
+    attributes that make a source RGW return NotModified even though the
+    destination object is missing. Keep this disabled for normal operation.
+  default: false
+  services:
+  - rgw
+  see_also:
+  - rgw_sync_debug_observability
+  with_legacy: true
+- name: rgw_sync_recovery_copy_only
+  type: bool
+  level: dev
+  desc: Skip delete replay during RGW multisite sync recovery.
+  long_desc: When enabled, bucket data sync advances delete and delete-marker
+    log entries without applying them to the destination bucket. This allows a
+    one-way copy-only recovery pass for buckets whose source zone is known to
+    contain missing objects but whose delete history must not be replayed
+    against the destination. Keep this disabled for normal operation.
+  default: false
+  services:
+  - rgw
+  see_also:
+  - rgw_sync_recovery_force_fetch
   with_legacy: true
 - name: rgw_period_push_interval
   type: float

@@ -946,6 +946,9 @@ int RGWHTTPManager::add_request(RGWHTTPClient *client)
 
   int ret = client->init_request(req_data);
   if (ret < 0) {
+    ldout(cct, 0) << "ERROR: " << __func__
+                  << " stage=init_request request=" << client->to_str()
+                  << " ret=" << ret << dendl;
     req_data->put();
     req_data = NULL;
     return ret;
@@ -961,6 +964,9 @@ int RGWHTTPManager::add_request(RGWHTTPClient *client)
   if (!is_started) {
     ret = link_request(req_data);
     if (ret < 0) {
+      ldout(cct, 0) << "ERROR: " << __func__
+                    << " stage=link_request request=" << client->to_str()
+                    << " ret=" << ret << dendl;
       req_data->put();
       req_data = NULL;
     }
@@ -968,6 +974,9 @@ int RGWHTTPManager::add_request(RGWHTTPClient *client)
   }
   ret = signal_thread();
   if (ret < 0) {
+    ldout(cct, 0) << "ERROR: " << __func__
+                  << " stage=signal_thread request=" << client->to_str()
+                  << " ret=" << ret << dendl;
     finish_request(req_data, ret);
   }
 
@@ -1159,6 +1168,25 @@ void *RGWHTTPManager::reqs_thread_entry()
           http_status = err.http_ret;
         }
         int id = req_data->id;
+        if (cct->_conf->rgw_sync_debug_observability &&
+            (result != CURLE_OK || status == -ERR_INTERNAL_ERROR ||
+             status == -EIO || status == -EAGAIN)) {
+          const auto method = req_data->client ? req_data->client->method : std::string{"unknown"};
+          const auto url_orig = req_data->client ? req_data->client->url_orig : std::string{"unknown"};
+          const auto url = req_data->client ? req_data->client->url : std::string{"unknown"};
+          dout(0) << "RGW_SYNC_DEBUG_HTTP_CLIENT_DONE"
+                  << " req_id=" << id
+                  << " curl_result=" << result
+                  << " curl_error=" << curl_easy_strerror((CURLcode)result)
+                  << " http_status=" << http_status
+                  << " status=" << status
+                  << " status_error=" << (status < 0 ? cpp_strerror(-status) : std::string{"none"})
+                  << " method=" << method
+                  << " url_orig=" << url_orig
+                  << " url=" << url
+                  << " error_buf=" << req_data->error_buf
+                  << dendl;
+        }
         switch (result) {
           case CURLE_OK:
             break;
@@ -1236,4 +1264,3 @@ int RGWHTTP::process(const DoutPrefixProvider* dpp, RGWHTTPClient *req, optional
 
   return req->wait(dpp, y);
 }
-

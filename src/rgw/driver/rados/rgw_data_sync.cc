@@ -1423,6 +1423,16 @@ public:
   int operate(const DoutPrefixProvider *dpp) override;
 };
 
+static int data_shard_for_bucket(RGWDataSyncCtx *sc, const rgw_bucket_shard& bs)
+{
+  if (!sc || !sc->env || !sc->env->driver ||
+      !sc->env->driver->svc() ||
+      !sc->env->driver->svc()->datalog_rados) {
+    return -1;
+  }
+  return sc->env->driver->svc()->datalog_rados->choose_oid(bs);
+}
+
 class RGWDataSyncSingleEntryCR : public RGWCoroutine {
   RGWDataSyncCtx *sc;
   RGWDataSyncEnv *sync_env;
@@ -1501,6 +1511,8 @@ public:
             event.error = rgw::sync_observability::error_label(retcode);
             event.duration_seconds = std::chrono::duration<double>(
               ceph::coarse_mono_clock::now() - sync_start).count();
+            rgw::sync_observability::add_data_shard(&event,
+              data_shard_for_bucket(sc, state->key.first));
             rgw::sync_observability::add_debug_bucket(&event, cct, state->key.first);
             rgw::sync_observability::emit(dpp, sc, std::move(event));
           }
@@ -1548,7 +1560,9 @@ public:
             event.phase = "error_repo";
             event.result = rgw::sync_observability::result_label(retcode);
             event.error = rgw::sync_observability::error_label(retcode);
-            rgw::sync_observability::add_debug_bucket(&event, cct, complete->bs);
+            rgw::sync_observability::add_data_shard(&event,
+              data_shard_for_bucket(sc, complete->bs));
+            rgw::sync_observability::add_bucket(&event, complete->bs);
             rgw::sync_observability::emit(dpp, sc, std::move(event));
           }
           if (retcode < 0) {
@@ -1566,6 +1580,8 @@ public:
           event.phase = "retry_repo";
           event.result = rgw::sync_observability::result_label(retcode);
           event.error = rgw::sync_observability::error_label(retcode);
+          rgw::sync_observability::add_data_shard(&event,
+            data_shard_for_bucket(sc, complete->bs));
           rgw::sync_observability::add_debug_bucket(&event, cct, complete->bs);
           rgw::sync_observability::emit(dpp, sc, std::move(event));
         }
@@ -1762,6 +1778,8 @@ public:
           event.duration_seconds = std::chrono::duration<double>(
             ceph::coarse_mono_clock::now() - remote_start).count();
         }
+        rgw::sync_observability::add_data_shard(&event,
+          data_shard_for_bucket(sc, source_bs));
         rgw::sync_observability::add_debug_bucket(&event, cct, source_bs);
         rgw::sync_observability::emit(dpp, sc, std::move(event));
       }
@@ -2183,6 +2201,7 @@ public:
           event.result = rgw::sync_observability::result_label(retcode);
           event.error = rgw::sync_observability::error_label(retcode);
           event.shard = shard_id;
+          rgw::sync_observability::add_data_shard(&event, shard_id);
           event.duration_seconds = std::chrono::duration<double>(
             ceph::coarse_mono_clock::now() - remote_start).count();
           rgw::sync_observability::emit(dpp, sc, std::move(event));
@@ -2195,6 +2214,7 @@ public:
           event.result = rgw::sync_observability::result_label(retcode);
           event.error = rgw::sync_observability::error_label(retcode);
           event.shard = shard_id;
+          rgw::sync_observability::add_data_shard(&event, shard_id);
           event.value = std::chrono::duration<double>(
             ceph::real_clock::now() - sync_marker.timestamp).count();
           rgw::sync_observability::emit(dpp, sc, std::move(event));
@@ -2347,6 +2367,7 @@ public:
           event.result = "retry";
           event.error = "ebusy";
           event.shard = shard_id;
+          rgw::sync_observability::add_data_shard(&event, shard_id);
           rgw::sync_observability::emit(dpp, sc, std::move(event));
         }
         return set_cr_error(-EBUSY);
@@ -2366,6 +2387,7 @@ public:
             event.result = rgw::sync_observability::result_label(ret);
             event.error = rgw::sync_observability::error_label(ret);
             event.shard = shard_id;
+            rgw::sync_observability::add_data_shard(&event, shard_id);
             rgw::sync_observability::emit(dpp, sc, std::move(event));
             return set_cr_error(ret);
           }
@@ -2382,6 +2404,7 @@ public:
         event.result = "success";
         event.error = "none";
         event.shard = shard_id;
+        rgw::sync_observability::add_data_shard(&event, shard_id);
         rgw::sync_observability::emit(dpp, sc, std::move(event));
       }
       /* Reread data sync status to fetch latest marker and objv */
@@ -3084,8 +3107,14 @@ public:
             event.remote_op = "object_stat";
             event.result = rgw::sync_observability::result_label(retcode);
             event.error = rgw::sync_observability::error_label(retcode);
+            if (retcode < 0) {
+              event.failure_stage = "source_object_stat";
+              event.reason = rgw::sync_observability::reason_label(retcode);
+            }
             event.duration_seconds = std::chrono::duration<double>(
               ceph::coarse_mono_clock::now() - remote_start).count();
+            rgw::sync_observability::add_data_shard(&event,
+              data_shard_for_bucket(sc, sync_pipe.info.source_bs));
             rgw::sync_observability::add_debug_bucket(&event, cct, sync_pipe.info.source_bs);
             rgw::sync_observability::emit(dpp, sc, std::move(event));
           }
@@ -3179,8 +3208,14 @@ public:
           event.remote_op = "object_fetch";
           event.result = rgw::sync_observability::result_label(retcode);
           event.error = rgw::sync_observability::error_label(retcode);
+          if (retcode < 0) {
+            event.failure_stage = "remote_fetch_or_local_put";
+            event.reason = rgw::sync_observability::reason_label(retcode);
+          }
           event.duration_seconds = std::chrono::duration<double>(
             ceph::coarse_mono_clock::now() - remote_start).count();
+          rgw::sync_observability::add_data_shard(&event,
+            data_shard_for_bucket(sc, sync_pipe.info.source_bs));
           rgw::sync_observability::add_debug_bucket(&event, cct, sync_pipe.info.source_bs);
           rgw::sync_observability::emit(dpp, sc, std::move(event));
         }
@@ -4353,6 +4388,15 @@ class RGWWriteBucketShardIncSyncStatus : public RGWCoroutine {
       yield call(new RGWSimpleRadosWriteAttrsCR(sync_env->dpp, sync_env->driver,
                                                 obj, attrs, &objv_tracker));
       if (retcode < 0) {
+        ldpp_dout(dpp, 0) << "RGW_SYNC_DEBUG_MARKER_WRITE_FAILURE"
+                          << " dest_zone=" << sync_env->svc->zone->zone_name()
+                          << " status_obj=" << obj
+                          << " marker_position=" << sync_marker.position
+                          << " marker_timestamp=" << sync_marker.timestamp
+                          << " ret=" << retcode
+                          << " error=" << cpp_strerror(-retcode)
+                          << " objv=" << objv_tracker
+                          << dendl;
         return set_cr_error(retcode);
       }
       if (stable_timestamp) {
@@ -4471,6 +4515,143 @@ static bool ignore_sync_error(int err) {
   return false;
 }
 
+static std::string op_state_label(RGWPendingState state)
+{
+  switch (state) {
+  case CLS_RGW_STATE_PENDING_MODIFY:
+    return "pending_modify";
+  case CLS_RGW_STATE_COMPLETE:
+    return "complete";
+  case CLS_RGW_STATE_UNKNOWN:
+  default:
+    return "unknown";
+  }
+}
+
+static std::string object_failure_stage_label(RGWModifyOp op)
+{
+  switch (op) {
+  case CLS_RGW_OP_ADD:
+  case CLS_RGW_OP_LINK_OLH:
+    return "remote_fetch_or_local_put";
+  case CLS_RGW_OP_DEL:
+  case CLS_RGW_OP_UNLINK_INSTANCE:
+    return "local_remove";
+  case CLS_RGW_OP_LINK_OLH_DM:
+    return "delete_marker";
+  case CLS_RGW_OP_CANCEL:
+  case CLS_RGW_OP_SYNCSTOP:
+  case CLS_RGW_OP_RESYNC:
+  case CLS_RGW_OP_UNKNOWN:
+  default:
+    return "unsupported_op";
+  }
+}
+
+static const char *sync_debug_bool_label(bool value)
+{
+  return value ? "true" : "false";
+}
+
+static bool sync_debug_bilog_versioned(uint16_t bilog_flags)
+{
+  return (bilog_flags & RGW_BILOG_FLAG_VERSIONED_OP) != 0;
+}
+
+static bool sync_debug_bilog_null_verid(uint16_t bilog_flags)
+{
+  return (bilog_flags & RGW_BILOG_NULL_VERSION) != 0;
+}
+
+template <typename T>
+static std::string sync_debug_marker_string(const T& marker)
+{
+  std::stringstream ss;
+  ss << marker;
+  return ss.str();
+}
+
+static void add_bilog_entry_event_context(rgw::sync_observability::Event *event,
+                                          const rgw_bi_log_entry& entry)
+{
+  if (!event) {
+    return;
+  }
+
+  event->bilog_op = std::string{to_string(entry.op)};
+  event->op_id = entry.id;
+  event->op_tag = entry.tag;
+  event->object = entry.object;
+  event->object_instance = entry.instance;
+  event->op_state = op_state_label(entry.state);
+  event->versioned = sync_debug_bool_label(sync_debug_bilog_versioned(entry.bilog_flags));
+  event->null_verid = sync_debug_bool_label(sync_debug_bilog_null_verid(entry.bilog_flags));
+  event->bilog_flags = std::to_string(entry.bilog_flags);
+  event->owner = entry.owner;
+  event->owner_display_name = entry.owner_display_name;
+}
+
+static void log_bilog_entry_failure(const DoutPrefixProvider *dpp,
+                                    RGWDataSyncCtx *sc,
+                                    const rgw_bucket_shard& bs,
+                                    const char *failure_stage,
+                                    int ret,
+                                    const rgw_bi_log_entry& entry)
+{
+  if (!rgw::sync_observability::bucket_debug_enabled(sc->cct, bs.bucket.name)) {
+    return;
+  }
+
+  ldpp_dout(dpp, 0) << "RGW_SYNC_DEBUG_BILOG_FAILURE"
+                    << " source_zone=" << sc->source_zone
+                    << " dest_zone=" << sc->env->svc->zone->zone_name()
+                    << " bucket=" << bs.bucket.name
+                    << " bucket_id=" << bs.bucket.bucket_id
+                    << " data_shard=" << data_shard_for_bucket(sc, bs)
+                    << " bucket_shard=" << bs.shard_id
+                    << " failure_stage=" << failure_stage
+                    << " ret=" << ret
+                    << " error=" << (ret < 0 ? cpp_strerror(-ret) : std::string{"none"})
+                    << " op_id=" << entry.id
+                    << " op_tag=" << entry.tag
+                    << " object=" << entry.object
+                    << " instance=" << entry.instance
+                    << " op=" << to_string(entry.op)
+                    << " op_state=" << op_state_label(entry.state)
+                    << " versioned=" << static_cast<int>(sync_debug_bilog_versioned(entry.bilog_flags))
+                    << " null_verid=" << static_cast<int>(sync_debug_bilog_null_verid(entry.bilog_flags))
+                    << " bilog_flags=" << entry.bilog_flags
+                    << " index_ver=" << entry.index_ver
+                    << " ver_pool=" << entry.ver.pool
+                    << " ver_epoch=" << entry.ver.epoch
+                    << " timestamp=" << entry.timestamp
+                    << " owner=" << entry.owner
+                    << " owner_display_name=" << entry.owner_display_name
+                    << dendl;
+}
+
+static void emit_bilog_entry_error(const DoutPrefixProvider *dpp,
+                                   RGWDataSyncCtx *sc,
+                                   const rgw_bucket_shard& bs,
+                                   const char *failure_stage,
+                                   int ret,
+                                   const rgw_bi_log_entry& entry)
+{
+  rgw::sync_observability::Event event;
+  event.metric = "bilog_errors";
+  event.sync_type = "incremental";
+  event.phase = failure_stage;
+  event.result = rgw::sync_observability::result_label(ret);
+  event.error = rgw::sync_observability::error_label(ret);
+  event.failure_stage = failure_stage;
+  event.reason = rgw::sync_observability::reason_label(ret);
+  rgw::sync_observability::add_data_shard(&event,
+    data_shard_for_bucket(sc, bs));
+  rgw::sync_observability::add_bucket(&event, bs);
+  add_bilog_entry_event_context(&event, entry);
+  rgw::sync_observability::emit(dpp, sc, std::move(event));
+}
+
 template <class T, class K>
 class RGWBucketSyncSingleEntryCR : public RGWCoroutine {
   RGWDataSyncCtx *sc;
@@ -4487,9 +4668,12 @@ class RGWBucketSyncSingleEntryCR : public RGWCoroutine {
   real_time timestamp;
   RGWModifyOp op;
   RGWPendingState op_state;
+  std::string op_tag;
+  uint16_t bilog_flags;
 
   T entry_marker;
   RGWSyncShardMarkerTrack<T, K> *marker_tracker;
+  RGWCoroutine *marker_finish_cr{nullptr};
 
   int sync_status;
 
@@ -4505,6 +4689,74 @@ class RGWBucketSyncSingleEntryCR : public RGWCoroutine {
   RGWSyncTraceNodeRef tn;
   std::string zone_name;
 
+  void add_bilog_context(rgw::sync_observability::Event *event) const {
+    if (!event) {
+      return;
+    }
+
+    event->bilog_op = std::string{to_string(op)};
+    event->op_id = sync_debug_marker_string(entry_marker);
+    event->op_tag = op_tag;
+    event->object = key.name;
+    event->object_instance = key.instance;
+    event->versioned = sync_debug_bool_label(versioned);
+    event->null_verid = sync_debug_bool_label(null_verid);
+    event->bilog_flags = std::to_string(bilog_flags);
+    event->owner = owner.id;
+    event->owner_display_name = owner.display_name;
+  }
+
+  void emit_bilog_error(const DoutPrefixProvider *dpp, const char *failure_stage, int ret) const {
+    rgw::sync_observability::Event event;
+    event.metric = "bilog_errors";
+    event.sync_type = "incremental";
+    event.phase = failure_stage;
+    event.result = rgw::sync_observability::result_label(ret);
+    event.error = rgw::sync_observability::error_label(ret);
+    event.op_state = op_state_label(op_state);
+    event.failure_stage = failure_stage;
+    event.reason = rgw::sync_observability::reason_label(ret);
+    rgw::sync_observability::add_data_shard(&event,
+      data_shard_for_bucket(sc, bs));
+    rgw::sync_observability::add_bucket(&event, bs);
+    add_bilog_context(&event);
+    rgw::sync_observability::emit(dpp, sc, std::move(event));
+  }
+
+  void log_bilog_failure(const DoutPrefixProvider *dpp, const char *failure_stage, int ret) const {
+    if (!rgw::sync_observability::bucket_debug_enabled(cct, bs.bucket.name)) {
+      return;
+    }
+
+    ldpp_dout(dpp, 0) << "RGW_SYNC_DEBUG_BILOG_FAILURE"
+                      << " source_zone=" << sc->source_zone
+                      << " dest_zone=" << sync_env->svc->zone->zone_name()
+                      << " bucket=" << bs.bucket.name
+                      << " bucket_id=" << bs.bucket.bucket_id
+                      << " data_shard=" << data_shard_for_bucket(sc, bs)
+                      << " bucket_shard=" << bs.shard_id
+                      << " failure_stage=" << failure_stage
+                      << " ret=" << ret
+                      << " error=" << (ret < 0 ? cpp_strerror(-ret) : std::string{"none"})
+                      << " op_id=" << sync_debug_marker_string(entry_marker)
+                      << " op_tag=" << op_tag
+                      << " object=" << key
+                      << " object_name=" << key.name
+                      << " object_instance=" << key.instance
+                      << " versioned=" << static_cast<int>(versioned)
+                      << " null_verid=" << static_cast<int>(null_verid)
+                      << " versioned_epoch=" << versioned_epoch.value_or(0)
+                      << " op=" << to_string(op)
+                      << " op_state=" << op_state_label(op_state)
+                      << " bilog_flags=" << bilog_flags
+                      << " timestamp=" << timestamp
+                      << " owner=" << owner.id
+                      << " owner_display_name=" << owner.display_name
+                      << " source_bucket_key=" << sync_pipe.source_bucket_info.bucket.get_key()
+                      << " dest_bucket_key=" << sync_pipe.dest_bucket_info.bucket.get_key()
+                      << dendl;
+  }
+
 public:
   RGWBucketSyncSingleEntryCR(RGWDataSyncCtx *_sc,
                              rgw_bucket_sync_pipe& _sync_pipe,
@@ -4514,6 +4766,7 @@ public:
                              real_time& _timestamp,
                              const rgw_bucket_entry_owner& _owner,
                              RGWModifyOp _op, RGWPendingState _op_state,
+                             std::string _op_tag, uint16_t _bilog_flags,
 		             const T& _entry_marker, RGWSyncShardMarkerTrack<T, K> *_marker_tracker, rgw_zone_set& _zones_trace,
                              RGWSyncTraceNodeRef& _tn_parent) : RGWCoroutine(_sc->cct),
 						      sc(_sc), sync_env(_sc->env),
@@ -4523,6 +4776,8 @@ public:
                                                       owner(_owner),
                                                       timestamp(_timestamp), op(_op),
                                                       op_state(_op_state),
+                                                      op_tag(std::move(_op_tag)),
+                                                      bilog_flags(_bilog_flags),
                                                       entry_marker(_entry_marker),
                                                       marker_tracker(_marker_tracker),
                                                       sync_status(0){
@@ -4594,19 +4849,41 @@ public:
 	      pretty_print(sc->env, "Deleting object s3://{}/{} in sync from zone {}\n",
 			   bs.bucket.name, key, zone_name);
 	    }
-            if (op == CLS_RGW_OP_UNLINK_INSTANCE) {
-              versioned = true;
+            if (cct->_conf->rgw_sync_recovery_copy_only) {
+              set_status("skipping delete in copy-only sync recovery");
+              tn->log(0, SSTR("rgw_sync_recovery_copy_only: skipping delete for "
+                               << sc->source_zone << "/" << bs.bucket << "/" << key
+                               << "[" << versioned_epoch.value_or(0) << "]"));
+              ldpp_dout(dpp, 1) << "rgw_sync_recovery_copy_only: skipping delete for "
+                                 << sc->source_zone << "/" << bs.bucket << "/" << key
+                                 << "[" << versioned_epoch.value_or(0) << "]" << dendl;
+              retcode = 0;
+            } else {
+              if (op == CLS_RGW_OP_UNLINK_INSTANCE) {
+                versioned = true;
+              }
+              if (null_verid) {
+                key.instance = "null";
+              }
+              tn->log(10, SSTR("removing obj: " << sc->source_zone << "/" << bs.bucket << "/" << key << "[" << versioned_epoch.value_or(0) << "]"));
+              call(data_sync_module->remove_object(dpp, sc, sync_pipe, key, timestamp, versioned, versioned_epoch.value_or(0), &zones_trace));
             }
-            if (null_verid) {
-              key.instance = "null";
-            }
-            tn->log(10, SSTR("removing obj: " << sc->source_zone << "/" << bs.bucket << "/" << key << "[" << versioned_epoch.value_or(0) << "]"));
-            call(data_sync_module->remove_object(dpp, sc, sync_pipe, key, timestamp, versioned, versioned_epoch.value_or(0), &zones_trace));
             // our copy of the object is more recent, continue as if it succeeded
           } else if (op == CLS_RGW_OP_LINK_OLH_DM) {
             set_status("creating delete marker");
             tn->log(10, SSTR("creating delete marker: obj: " << sc->source_zone << "/" << bs.bucket << "/" << key << "[" << versioned_epoch.value_or(0) << "]"));
-            call(data_sync_module->create_delete_marker(dpp, sc, sync_pipe, key, timestamp, owner, versioned, versioned_epoch.value_or(0), &zones_trace));
+            if (cct->_conf->rgw_sync_recovery_copy_only) {
+              set_status("skipping delete marker in copy-only sync recovery");
+              tn->log(0, SSTR("rgw_sync_recovery_copy_only: skipping delete marker for "
+                               << sc->source_zone << "/" << bs.bucket << "/" << key
+                               << "[" << versioned_epoch.value_or(0) << "]"));
+              ldpp_dout(dpp, 1) << "rgw_sync_recovery_copy_only: skipping delete marker for "
+                                 << sc->source_zone << "/" << bs.bucket << "/" << key
+                                 << "[" << versioned_epoch.value_or(0) << "]" << dendl;
+              retcode = 0;
+            } else {
+              call(data_sync_module->create_delete_marker(dpp, sc, sync_pipe, key, timestamp, owner, versioned, versioned_epoch.value_or(0), &zones_trace));
+            }
           }
           tn->set_resource_name(SSTR(bucket_str_noinstance(bs.bucket) << "/" << key));
         }
@@ -4631,6 +4908,50 @@ public:
         set_status() << "failed to sync obj; retcode=" << retcode;
         tn->log(0, SSTR("ERROR: failed to sync object: "
             << bucket_shard_str{bs} << "/" << key.name));
+        {
+          rgw::sync_observability::Event event;
+          event.metric = "errors";
+          event.sync_type = "bucket";
+          event.phase = "object_sync";
+          event.result = rgw::sync_observability::result_label(retcode);
+          event.error = rgw::sync_observability::error_label(retcode);
+          event.operation = std::string{to_string(op)};
+          event.op_state = op_state_label(op_state);
+          event.failure_stage = object_failure_stage_label(op);
+          event.reason = rgw::sync_observability::reason_label(retcode);
+          rgw::sync_observability::add_data_shard(&event,
+            data_shard_for_bucket(sc, bs));
+          rgw::sync_observability::add_bucket(&event, bs);
+          add_bilog_context(&event);
+          rgw::sync_observability::emit(dpp, sc, std::move(event));
+        }
+        if (rgw::sync_observability::bucket_debug_enabled(cct, bs.bucket.name)) {
+          ldpp_dout(dpp, 0) << "RGW_SYNC_DEBUG_OBJECT_FAILURE"
+                             << " source_zone=" << sc->source_zone
+                             << " dest_zone=" << sync_env->svc->zone->zone_name()
+                             << " bucket=" << bs.bucket.name
+                             << " bucket_id=" << bs.bucket.bucket_id
+                             << " data_shard=" << data_shard_for_bucket(sc, bs)
+                             << " bucket_shard=" << bs.shard_id
+                             << " key=" << key
+                             << " key_instance=" << key.instance
+                             << " op_id=" << sync_debug_marker_string(entry_marker)
+                             << " op_tag=" << op_tag
+                             << " versioned=" << static_cast<int>(versioned)
+                             << " null_verid=" << static_cast<int>(null_verid)
+                             << " versioned_epoch=" << versioned_epoch.value_or(0)
+                             << " op=" << to_string(op)
+                             << " op_state=" << op_state_label(op_state)
+                             << " bilog_flags=" << bilog_flags
+                             << " failure_stage=" << object_failure_stage_label(op)
+                             << " ret=" << retcode
+                             << " error=" << cpp_strerror(-retcode)
+                             << " marker=" << entry_marker
+                             << " timestamp=" << timestamp
+                             << " source_bucket_key=" << sync_pipe.source_bucket_info.bucket.get_key()
+                             << " dest_bucket_key=" << sync_pipe.dest_bucket_info.bucket.get_key()
+                             << dendl;
+        }
         if (!ignore_sync_error(retcode)) {
           error_ss << bucket_shard_str{bs} << "/" << key.name;
           sync_status = retcode;
@@ -4643,7 +4964,12 @@ done:
       if (sync_status == 0) {
         /* update marker */
         set_status() << "calling marker_tracker->finish(" << entry_marker << ")";
-        yield call(marker_tracker->finish(entry_marker));
+        marker_finish_cr = marker_tracker->finish(entry_marker);
+        yield call(marker_finish_cr);
+        if (retcode < 0) {
+          log_bilog_failure(dpp, "marker_finish", retcode);
+          emit_bilog_error(dpp, "marker_finish", retcode);
+        }
         sync_status = retcode;
       }
       if (sync_status < 0) {
@@ -4683,9 +5009,14 @@ class RGWBucketFullSyncCR : public RGWCoroutine {
     RGWBucketSyncFlowManager::pipe_rules_ref rules;
     RGWBucketSyncFlowManager::pipe_rules::prefix_map_t::const_iterator iter;
     std::optional<string> cur_prefix;
+    bool force_all_prefixes{false};
 
     void set_rules(RGWBucketSyncFlowManager::pipe_rules_ref& _rules) {
       rules = _rules;
+    }
+
+    void set_force_all_prefixes(bool enabled) {
+      force_all_prefixes = enabled;
     }
 
     bool revalidate_marker(rgw_obj_key *marker) {
@@ -4694,7 +5025,7 @@ class RGWBucketFullSyncCR : public RGWCoroutine {
         return true;
       }
       if (!rules) {
-        return false;
+        return force_all_prefixes;
       }
       iter = rules->prefix_search(marker->name);
       if (iter == rules->prefix_end()) {
@@ -4708,7 +5039,7 @@ class RGWBucketFullSyncCR : public RGWCoroutine {
 
     bool check_key_handled(const rgw_obj_key& key) {
       if (!rules) {
-        return false;
+        return force_all_prefixes;
       }
       if (cur_prefix &&
           boost::starts_with(key.name, *cur_prefix)) {
@@ -4741,6 +5072,7 @@ public:
   {
     zones_trace.insert(sc->source_zone.id, sync_pipe.info.dest_bucket.get_key());
     prefix_handler.set_rules(sync_pipe.get_rules());
+    prefix_handler.set_force_all_prefixes(cct->_conf->rgw_sync_recovery_force_fetch);
   }
 
   int operate(const DoutPrefixProvider *dpp) override;
@@ -4805,7 +5137,18 @@ int RGWBucketFullSyncCR::operate(const DoutPrefixProvider *dpp)
         }
         total_entries++;
         if (!marker_tracker.start(entry->key, total_entries, real_time())) {
-          tn->log(0, SSTR("ERROR: cannot start syncing " << entry->key << ". Duplicate entry?"));
+          tn->log(0, SSTR("ERROR: cannot start syncing " << entry->key
+              << ". Duplicate entry? source_zone=" << sc->source_zone
+              << " bucket=" << bs.bucket
+              << " key_instance=" << entry->key.instance
+              << " op=" << entry->get_modify_op()
+              << " versioned_epoch=" << entry->versioned_epoch
+              << " mtime=" << entry->mtime
+              << " delete_marker=" << (int)entry->delete_marker
+              << " is_latest=" << (int)entry->is_latest
+              << " size=" << entry->size
+              << " etag=" << entry->etag
+              << " rgw_tag=" << entry->rgw_tag));
         } else {
           using SyncCR = RGWBucketSyncSingleEntryCR<rgw_obj_key, rgw_obj_key>;
           yield spawn(new SyncCR(sc, sync_pipe, entry->key,
@@ -4813,6 +5156,7 @@ int RGWBucketFullSyncCR::operate(const DoutPrefixProvider *dpp)
                                  false,
                                  entry->versioned_epoch, entry->mtime,
                                  entry->owner, entry->get_modify_op(), CLS_RGW_STATE_COMPLETE,
+                                 std::string{}, 0,
                                  entry->key, &marker_tracker, zones_trace, tn),
                       false);
         }
@@ -5209,7 +5553,18 @@ int RGWBucketShardIncrementalSyncCR::operate(const DoutPrefixProvider *dpp)
         // yield {
           set_status() << "start object sync";
           if (!marker_tracker.start(cur_id, 0, entry->timestamp)) {
-            tn->log(0, SSTR("ERROR: cannot start syncing " << cur_id << ". Duplicate entry?"));
+            tn->log(0, SSTR("ERROR: cannot start syncing " << cur_id
+                << ". Duplicate entry? source_zone=" << sc->source_zone
+                << " bucket=" << bs.bucket
+                << " key=" << key
+                << " key_instance=" << key.instance
+                << " op=" << entry->op
+                << " state=" << entry->state
+                << " timestamp=" << entry->timestamp
+                << " versioned=" << (int)entry->is_versioned()
+                << " null_verid=" << (int)entry->is_null_verid()
+                << " ver_epoch=" << entry->ver.epoch
+                << " ver_pool=" << entry->ver.pool));
           } else {
             std::optional<uint64_t> versioned_epoch;
             rgw_bucket_entry_owner owner(entry->owner, entry->owner_display_name);
@@ -5221,6 +5576,7 @@ int RGWBucketShardIncrementalSyncCR::operate(const DoutPrefixProvider *dpp)
             spawn(new SyncCR(sc, sync_pipe, key,
                              entry->is_versioned(), entry->is_null_verid(), versioned_epoch,
                              entry->timestamp, owner, entry->op, entry->state,
+                             entry->tag, entry->bilog_flags,
                              cur_id, &marker_tracker, entry->zones_trace, tn),
                   false);
           }
@@ -5258,6 +5614,10 @@ int RGWBucketShardIncrementalSyncCR::operate(const DoutPrefixProvider *dpp)
     yield call(marker_tracker.flush());
     if (retcode < 0) {
       tn->log(0, SSTR("ERROR: incremental sync marker_tracker.flush() returned retcode=" << retcode));
+      if (entry) {
+        log_bilog_entry_failure(dpp, sc, bs, "marker_final_flush", retcode, *entry);
+        emit_bilog_entry_error(dpp, sc, bs, "marker_final_flush", retcode, *entry);
+      }
       return set_cr_error(retcode);
     }
     if (sync_status < 0) {
@@ -6390,8 +6750,9 @@ public:
 
   int operate(const DoutPrefixProvider *dpp) override {
     reenter(this) {
-      // Since all errors (except ECANCELED) are considered retryable,
-      // retry other errors so long as we're making progress.
+      // Retry errors so long as we're making progress. ECANCELED can happen
+      // when marker/status-object writes race with another sync worker; retry
+      // it here instead of aborting the whole bucket sync run immediately.
       for (retries = 0u, retcode = -EDOM;
 	   (retries < allowed_retries) && (retcode != 0);
 	   ++retries) {
@@ -6405,14 +6766,9 @@ public:
 					sc.env->sync_tracer->root_node,
 					&progress));
 
-	if (retcode == -ECANCELED) {
-	  ldpp_dout(dpp, -1) << "ERROR: Got -ECANCELED for "
-			     << pair.source_bs << dendl;
-	  drain_all();
-	  return set_cr_error(retcode);
-	} else if (retcode < 0) {
+	if (retcode < 0) {
 	  ldpp_dout(dpp, 5) << "WARNING: Got error, retcode=" << retcode << " for "
-			    << pair.source_bs << "on retry "
+			    << pair.source_bs << " on retry "
 			    << retries + 1 << " of " << allowed_retries
 			    << " allowed" << dendl;
 	  // Reset the retry counter if we made any progress

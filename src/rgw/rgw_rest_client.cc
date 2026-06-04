@@ -8,6 +8,7 @@
 #include "rgw_http_errors.h"
 
 #include "common/armor.h"
+#include "common/errno.h"
 #include "common/strtol.h"
 #include "include/str_list.h"
 #include "rgw_crypt_sanitize.h"
@@ -917,7 +918,9 @@ int RGWRESTStreamRWRequest::send(RGWHTTPManager *mgr)
   if (sign_key) {
     int r = headers_gen->sign(this, *sign_key, outblp);
     if (r < 0) {
-      ldpp_dout(this, 0) << "ERROR: failed to sign request" << dendl;
+      ldpp_dout(this, 0) << "ERROR: " << __func__
+                         << " stage=sign request=" << to_str()
+                         << " ret=" << r << dendl;
       return r;
     }
   }
@@ -926,7 +929,13 @@ int RGWRESTStreamRWRequest::send(RGWHTTPManager *mgr)
     headers.emplace_back(kv);
   }
 
-  return RGWHTTPStreamRWRequest::send(mgr);
+  int r = RGWHTTPStreamRWRequest::send(mgr);
+  if (r < 0) {
+    ldpp_dout(this, 0) << "ERROR: " << __func__
+                       << " stage=http_send request=" << to_str()
+                       << " ret=" << r << dendl;
+  }
+  return r;
 }
 
 int RGWHTTPStreamRWRequest::complete_request(const DoutPrefixProvider* dpp,
@@ -993,6 +1002,22 @@ int RGWHTTPStreamRWRequest::complete_request(const DoutPrefixProvider* dpp,
     }
   }
 
+  if (cct->_conf->rgw_sync_debug_observability &&
+      status < 0 && status != -ERR_NOT_MODIFIED) {
+    auto header_value = [this](const char *name) {
+      auto iter = out_headers.find(name);
+      return iter == out_headers.end() ? std::string{"unknown"} : iter->second;
+    };
+    ldpp_dout(dpp, 0) << "RGW_SYNC_DEBUG_REMOTE_HTTP_FAILURE"
+                      << " request=" << to_str()
+                      << " http_status=" << http_status
+                      << " status=" << status
+                      << " error=" << cpp_strerror(-status)
+                      << " x_amz_request_id=" << header_value("X_AMZ_REQUEST_ID")
+                      << " x_trans_id=" << header_value("X_TRANS_ID")
+                      << " rgw_error_code=" << header_value("X_AMZ_ERROR_CODE")
+                      << dendl;
+  }
   if (pheaders) {
     *pheaders = std::move(out_headers);
   }
