@@ -4598,11 +4598,12 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
 
   obj_time_weight dest_mtime_weight;
   rgw_zone_set_entry dst_zone_trace(svc.zone->get_zone().id, dest_bucket_info.bucket.get_key());
+  ceph::coarse_mono_time stage_start;
 
   if (copy_if_newer) {
     /* need to get mtime for destination */
     fetch_stage = "dest_state";
-    auto stage_start = ceph::coarse_mono_clock::now();
+    stage_start = ceph::coarse_mono_clock::now();
     ret = get_obj_state(rctx.dpp, &dest_obj_ctx, dest_bucket_info, stat_dest_obj, &dest_state, &manifest, stat_follow_olh, rctx.y);
     emit_fetch_stage(fetch_stage, ret, stage_start);
     if (ret < 0)
@@ -4624,7 +4625,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   static constexpr int NUM_ENPOINT_IOERROR_RETRIES = 20;
   for (int tries = 0; tries < NUM_ENPOINT_IOERROR_RETRIES; tries++) {
     fetch_stage = "remote_get_send";
-    auto stage_start = ceph::coarse_mono_clock::now();
+    stage_start = ceph::coarse_mono_clock::now();
     const bool force_fetch = cct->_conf->rgw_sync_recovery_force_fetch;
     rgw_zone_set_entry *trace_condition =
       force_fetch ? nullptr : &dst_zone_trace;
@@ -4664,7 +4665,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
     break;
   }
   fetch_stage = "remote_stream_flush";
-  auto stage_start = ceph::coarse_mono_clock::now();
+  stage_start = ceph::coarse_mono_clock::now();
   ret = cb.flush();
   emit_fetch_stage(fetch_stage, ret, stage_start);
   if (ret < 0) {
