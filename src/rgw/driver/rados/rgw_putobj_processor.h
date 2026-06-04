@@ -15,7 +15,9 @@
 
 #pragma once
 
+#include <functional>
 #include <optional>
+#include <utility>
 
 #include "rgw_putobj.h"
 #include "services/svc_tier_rados.h"
@@ -171,6 +173,7 @@ class AtomicObjectProcessor : public ManifestObjectProcessor {
   const std::optional<uint64_t> olh_epoch;
   const std::string unique_tag;
   bufferlist first_chunk; // written with the head in complete()
+  std::function<void(const char*, int, double)> sync_debug_stage_observer;
 
   int process_first_chunk(bufferlist&& data, rgw::sal::DataProcessor **processor) override;
  public:
@@ -200,6 +203,11 @@ class AtomicObjectProcessor : public ManifestObjectProcessor {
                rgw_zone_set *zones_trace, bool *canceled,
                const req_context& rctx,
                uint32_t flags) override;
+
+  void set_sync_debug_stage_observer(
+      std::function<void(const char*, int, double)> observer) {
+    sync_debug_stage_observer = std::move(observer);
+  }
 
 };
 
@@ -293,4 +301,3 @@ class MultipartObjectProcessor : public ManifestObjectProcessor {
 
 } // namespace putobj
 } // namespace rgw
-

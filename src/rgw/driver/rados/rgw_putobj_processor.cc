@@ -14,6 +14,7 @@
  */
 
 #include "include/rados/librados.hpp"
+#include "common/ceph_time.h"
 #include "rgw_aio.h"
 #include "rgw_putobj_processor.h"
 #include "rgw_multi.h"
@@ -23,6 +24,8 @@
 #include "rgw_sal_rados.h"
 
 #include "cls/version/cls_version_client.h"
+
+#include <chrono>
 
 #define dout_subsys ceph_subsys_rgw
 
@@ -384,7 +387,19 @@ int AtomicObjectProcessor::complete(
 				const req_context& rctx,
 				uint32_t flags)
 {
+  const auto emit_stage = [&](const char *stage, int ret,
+                              ceph::coarse_mono_time start) {
+    if (!sync_debug_stage_observer) {
+      return;
+    }
+    const double duration = std::chrono::duration<double>(
+        ceph::coarse_mono_clock::now() - start).count();
+    sync_debug_stage_observer(stage, ret, duration);
+  };
+
+  auto stage_start = ceph::coarse_mono_clock::now();
   int r = writer.drain();
+  emit_stage("complete_writer_drain", r, stage_start);
   if (r < 0) {
     ldpp_dout(dpp, 0) << "ERROR: AtomicObjectProcessor::complete writer.drain failed"
                       << " ret=" << r
@@ -395,7 +410,9 @@ int AtomicObjectProcessor::complete(
     return r;
   }
   const uint64_t actual_size = get_actual_size();
+  stage_start = ceph::coarse_mono_clock::now();
   r = manifest_gen.create_next(actual_size);
+  emit_stage("complete_manifest_finalize", r, stage_start);
   if (r < 0) {
     ldpp_dout(dpp, 0) << "ERROR: AtomicObjectProcessor::complete manifest create_next failed"
                       << " ret=" << r
@@ -430,8 +447,11 @@ int AtomicObjectProcessor::complete(
   obj_op.meta.user_data = user_data;
   obj_op.meta.zones_trace = zones_trace;
   obj_op.meta.modify_tail = true;
+  obj_op.meta.sync_debug_stage_observer = sync_debug_stage_observer;
 
+  stage_start = ceph::coarse_mono_clock::now();
   r = read_cloudtier_info_from_attrs(attrs, obj_op.meta.category, obj_op.meta.olh_epoch, manifest);
+  emit_stage("complete_cloudtier_attrs", r, stage_start);
 
   if (r < 0) { // incase of any errors while decoding tier_config/restore attrs
     ldpp_dout(dpp, 0) << "ERROR: AtomicObjectProcessor::complete cloudtier attr decode failed"
@@ -443,8 +463,10 @@ int AtomicObjectProcessor::complete(
     return r;
   }
 
+  stage_start = ceph::coarse_mono_clock::now();
   r = obj_op.write_meta(actual_size, accounted_size, attrs, rctx,
                         writer.get_trace(), flags & rgw::sal::FLAG_LOG_OP);
+  emit_stage("complete_write_meta", r, stage_start);
   if (r < 0) {
     ldpp_dout(dpp, 0) << "ERROR: AtomicObjectProcessor::complete write_meta failed"
                       << " ret=" << r

@@ -6,6 +6,7 @@
 #include "common/ceph_context.h"
 #include "common/dout.h"
 #include "common/errno.h"
+#include "rgw_common.h"
 #include "rgw_data_sync.h"
 #include "rgw_zone.h"
 #include "services/svc_zone.h"
@@ -192,6 +193,9 @@ std::string result_label(int ret)
   if (ret == -ENOENT) {
     return "skipped";
   }
+  if (ret == -ERR_NOT_MODIFIED) {
+    return "skipped";
+  }
   if (ret == -EBUSY || ret == -EAGAIN || ret == -ECANCELED ||
       ret == -ETIMEDOUT) {
     return "retry";
@@ -219,6 +223,8 @@ std::string error_label(int ret)
     return "eio";
   case ENOENT:
     return "enoent";
+  case ERR_NOT_MODIFIED:
+    return "not_modified";
   case EPERM:
     return "eperm";
   case ETIMEDOUT:
@@ -254,6 +260,8 @@ std::string reason_label(int ret)
     return "io";
   case ENOENT:
     return "not_found";
+  case ERR_NOT_MODIFIED:
+    return "already_current";
   default:
     return "unknown";
   }

@@ -3221,6 +3221,15 @@ int RGWRados::Object::Write::_do_write_meta(uint64_t size, uint64_t accounted_si
 {
   RGWRados::Bucket::UpdateIndex *index_op = static_cast<RGWRados::Bucket::UpdateIndex *>(_index_op);
   RGWRados *store = target->get_store();
+  const auto emit_stage = [&](const char *stage, int ret,
+                              ceph::coarse_mono_time start) {
+    if (!meta.sync_debug_stage_observer) {
+      return;
+    }
+    const double duration = std::chrono::duration<double>(
+        ceph::coarse_mono_clock::now() - start).count();
+    meta.sync_debug_stage_observer(stage, ret, duration);
+  };
 
   ObjectWriteOperation op;
 #ifdef WITH_LTTNG
@@ -3236,7 +3245,9 @@ int RGWRados::Object::Write::_do_write_meta(uint64_t size, uint64_t accounted_si
 
   RGWObjState *state;
   RGWObjManifest *manifest = nullptr;
+  auto stage_start = ceph::coarse_mono_clock::now();
   int r = target->get_state(rctx.dpp, &state, &manifest, false, rctx.y, assume_noent);
+  emit_stage("write_meta_get_state", r, stage_start);
   if (r < 0)
     return r;
 
@@ -3248,7 +3259,9 @@ int RGWRados::Object::Write::_do_write_meta(uint64_t size, uint64_t accounted_si
   }
 
   rgw_rados_ref ref;
+  stage_start = ceph::coarse_mono_clock::now();
   r = store->get_obj_head_ref(rctx.dpp, target->get_meta_placement_rule(), obj, &ref);
+  emit_stage("write_meta_get_head_ref", r, stage_start);
   if (r < 0)
     return r;
 
@@ -3265,7 +3278,9 @@ int RGWRados::Object::Write::_do_write_meta(uint64_t size, uint64_t accounted_si
   target->state = state;
   RGWObjState* current_state = target->state;
   if (!target->obj.key.instance.empty()) {
+    stage_start = ceph::coarse_mono_clock::now();
     r = target->get_current_version_state(rctx.dpp, current_state, rctx.y);
+    emit_stage("write_meta_current_version_state", r, stage_start);
     if (r == -ENOENT) {
       current_state = target->state;
     } else if (r < 0) {
@@ -3273,13 +3288,17 @@ int RGWRados::Object::Write::_do_write_meta(uint64_t size, uint64_t accounted_si
     }
   }
 
+  stage_start = ceph::coarse_mono_clock::now();
   r = target->check_preconditions(rctx.dpp, std::nullopt, real_clock::zero(), false, meta.if_match, meta.if_nomatch, *current_state, rctx.y);
+  emit_stage("write_meta_check_preconditions", r, stage_start);
   if (r < 0) {
     return r;
   }
   bool guard = ((target->manifest) || (target->state->obj_tag.length() != 0)) && (!target->state->fake_tag);
   bool set_attr_id_tag = guard && target->obj.key.instance.empty() && (meta.if_nomatch == nullptr || meta.if_nomatch != "*"sv);
+  stage_start = ceph::coarse_mono_clock::now();
   r = target->prepare_atomic_modification(rctx.dpp, op, reset_obj, ptag, meta.modify_tail, set_attr_id_tag, rctx.y);
+  emit_stage("write_meta_prepare_atomic_modification", r, stage_start);
   if (r < 0)
     return r;
 
@@ -3423,7 +3442,9 @@ int RGWRados::Object::Write::_do_write_meta(uint64_t size, uint64_t accounted_si
 
   if (!index_op->is_prepared()) {
     tracepoint(rgw_rados, prepare_enter, req_id.c_str());
+    stage_start = ceph::coarse_mono_clock::now();
     r = index_op->prepare(rctx.dpp, CLS_RGW_OP_ADD, &state->write_tag, rctx.y);
+    emit_stage("write_meta_index_prepare", r, stage_start);
     tracepoint(rgw_rados, prepare_exit, req_id.c_str());
     if (r < 0)
       return r;
@@ -3432,7 +3453,9 @@ int RGWRados::Object::Write::_do_write_meta(uint64_t size, uint64_t accounted_si
   auto& ioctx = ref.ioctx;
 
   tracepoint(rgw_rados, operate_enter, req_id.c_str());
+  stage_start = ceph::coarse_mono_clock::now();
   r = rgw_rados_operate(rctx.dpp, ref.ioctx, ref.obj.oid, std::move(op), rctx.y, 0, &trace, &epoch);
+  emit_stage("write_meta_head_operate", r, stage_start);
   tracepoint(rgw_rados, operate_exit, req_id.c_str());
   if (r < 0) { /* we can expect to get -ECANCELED if object was replaced under,
                 or -ENOENT if was removed, or -EEXIST if it did not exist
@@ -3446,17 +3469,21 @@ int RGWRados::Object::Write::_do_write_meta(uint64_t size, uint64_t accounted_si
 
   poolid = ioctx.get_id();
 
+  stage_start = ceph::coarse_mono_clock::now();
   r = target->complete_atomic_modification(rctx.dpp, meta.keep_tail, rctx.y);
+  emit_stage("write_meta_complete_atomic_modification", r, stage_start);
   if (r < 0) {
     ldpp_dout(rctx.dpp, 0) << "ERROR: complete_atomic_modification returned r=" << r << dendl;
   }
 
   tracepoint(rgw_rados, complete_enter, req_id.c_str());
+  stage_start = ceph::coarse_mono_clock::now();
   r = index_op->complete(rctx.dpp, poolid, epoch, size, accounted_size,
                         meta.set_mtime, etag, content_type,
                         storage_class, meta.owner,
 			 meta.category, meta.remove_objs, rctx.y,
 			 meta.user_data, meta.appendable, log_op);
+  emit_stage("write_meta_index_complete", r, stage_start);
   tracepoint(rgw_rados, complete_exit, req_id.c_str());
   if (r < 0)
     goto done_cancel;
@@ -3471,7 +3498,9 @@ int RGWRados::Object::Write::_do_write_meta(uint64_t size, uint64_t accounted_si
 
   if (versioned_op && meta.olh_epoch) {
     bool add_log = log_op && store->svc.zone->need_to_log_data();
+    stage_start = ceph::coarse_mono_clock::now();
     r = store->set_olh(rctx.dpp, target->get_ctx(), target->get_bucket_info(), obj, false, NULL, *meta.olh_epoch, real_time(), false, rctx.y, meta.zones_trace, add_log);
+    emit_stage("write_meta_set_olh", r, stage_start);
     if (r < 0) {
       return r;
     }
@@ -3481,8 +3510,10 @@ int RGWRados::Object::Write::_do_write_meta(uint64_t size, uint64_t accounted_si
     rgw_obj_index_key obj_key;
     obj.key.get_index_key(&obj_key);
 
+    stage_start = ceph::coarse_mono_clock::now();
     r = store->obj_expirer->hint_add(rctx.dpp, meta.delete_at, obj.bucket.tenant, obj.bucket.name,
                                      obj.bucket.bucket_id, obj_key);
+    emit_stage("write_meta_expirer_hint", r, stage_start);
     if (r < 0) {
       ldpp_dout(rctx.dpp, 0) << "ERROR: objexp_hint_add() returned r=" << r << ", object will not get removed" << dendl;
       /* ignoring error, nothing we can do at this point */
@@ -3506,7 +3537,9 @@ done_cancel:
   // we shouldn't be calling index_op->cancel() in this case
   // Instead, we should leave that pending entry in the index so than bucket listing can recover with check_disk_state() and cls_rgw_suggest_changes()
   if (r != -ETIMEDOUT) {
+    auto cancel_start = ceph::coarse_mono_clock::now();
     int ret = index_op->cancel(rctx.dpp, meta.remove_objs, rctx.y, log_op);
+    emit_stage("write_meta_index_cancel", ret, cancel_start);
     if (ret < 0) {
       ldpp_dout(rctx.dpp, 0) << "ERROR: index_op.cancel() returned ret=" << ret << dendl;
     }
@@ -4454,8 +4487,8 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
     }
     return source_zone.id.empty() ? std::string{"unknown"} : source_zone.id;
   };
-  const auto emit_fetch_stage = [&](const char *stage, int stage_ret,
-                                    ceph::coarse_mono_time stage_start) {
+  const auto emit_stage_event = [&](const char *phase, const char *stage,
+                                    int stage_ret, double duration_seconds) {
     if (!rgw::sync_observability::bucket_debug_enabled(cct, src_obj.bucket.name)) {
       return;
     }
@@ -4467,7 +4500,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
     event.dest_zone = svc.zone->zone_name();
     event.metric = "remote_requests";
     event.sync_type = "unknown";
-    event.phase = "object_fetch_stage";
+    event.phase = phase;
     event.remote_op = stage;
     event.result = rgw::sync_observability::result_label(stage_ret);
     event.error = rgw::sync_observability::error_label(stage_ret);
@@ -4477,9 +4510,14 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
     }
     event.bucket = src_obj.bucket.name.empty() ? "unknown" : src_obj.bucket.name;
     event.bucket_id = short_bucket_id(src_obj.bucket.bucket_id);
-    event.duration_seconds = std::chrono::duration<double>(
-      ceph::coarse_mono_clock::now() - stage_start).count();
+    event.duration_seconds = duration_seconds;
     rgw::sync_observability::emit(rctx.dpp, cct, std::move(event));
+  };
+  const auto emit_fetch_stage = [&](const char *stage, int stage_ret,
+                                    ceph::coarse_mono_time stage_start) {
+    emit_stage_event("object_fetch_stage", stage, stage_ret,
+                     std::chrono::duration<double>(
+                       ceph::coarse_mono_clock::now() - stage_start).count());
   };
 
   // use an empty owner until we decode RGW_ATTR_ACL
@@ -4492,6 +4530,11 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   AtomicObjectProcessor processor(&aio, this, dest_bucket_info, nullptr,
                                   owner, dest_obj_ctx, dest_obj, olh_epoch,
 				  tag, rctx.dpp, rctx.y, no_trace);
+  processor.set_sync_debug_stage_observer(
+      [&](const char *stage, int stage_ret, double duration_seconds) {
+        emit_stage_event("object_complete_stage", stage, stage_ret,
+                         duration_seconds);
+      });
   RGWRESTConn *conn;
   auto& zone_conn_map = svc.zone->get_zone_conn_map();
   auto& zonegroup_conn_map = svc.zone->get_zonegroup_conn_map();
