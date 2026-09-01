@@ -4995,6 +4995,7 @@ class RGWBucketFullSyncCR : public RGWCoroutine {
   bucket_list_result list_result;
   list<bucket_list_entry>::iterator entries_iter;
   rgw_obj_key list_marker;
+  rgw_obj_key page_marker;
   bucket_list_entry *entry{nullptr};
 
   int total_entries{0};
@@ -5110,6 +5111,7 @@ int RGWBucketFullSyncCR::operate(const DoutPrefixProvider *dpp)
         break;
       }
 
+      page_marker = list_marker;
       yield call(new RGWListRemoteBucketCR(sc, bs, list_marker, &list_result));
       if (retcode < 0 && retcode != -ENOENT) {
         set_status("failed bucket listing, going down");
@@ -5139,6 +5141,24 @@ int RGWBucketFullSyncCR::operate(const DoutPrefixProvider *dpp)
         if (!prefix_handler.check_key_handled(entries_iter->key)) {
           set_status() << "skipping entry due to policy rules: " << entries_iter->key;
           tn->log(20, SSTR("skipping entry due to policy rules: " << entries_iter->key));
+          continue;
+        }
+        if (cct->_conf->rgw_sync_recovery_force_fetch &&
+            cct->_conf->rgw_sync_recovery_copy_only &&
+            entry->delete_marker &&
+            rgw::sync_observability::object_force_fetch_enabled(
+              cct, bs.bucket.name, entry->key.name)) {
+          // A corrupt/versioned listing can return a delete marker and data
+          // write with the same null-version key. In copy-only recovery, do
+          // not let the delete marker consume the tracker's key and block the
+          // data write as a duplicate.
+          ldpp_dout(dpp, 1)
+              << "rgw_sync_recovery_copy_only: skipping full-sync delete "
+              << "marker before tracker source_zone=" << sc->source_zone
+              << " bucket=" << bs.bucket
+              << " key=" << entry->key
+              << " versioned_epoch=" << entry->versioned_epoch
+              << dendl;
           continue;
         }
         total_entries++;
@@ -5174,6 +5194,23 @@ int RGWBucketFullSyncCR::operate(const DoutPrefixProvider *dpp)
                 }
                 return 0;
               });
+      }
+      if (list_result.is_truncated && page_marker == list_marker &&
+          cct->_conf->rgw_sync_recovery_force_fetch &&
+          cct->_conf->rgw_sync_recovery_copy_only &&
+          rgw::sync_observability::object_force_fetch_enabled(
+            cct, bs.bucket.name, list_marker.name)) {
+        // All entries in a malformed null-version page can share the same
+        // key and version id. Advance only the version marker so the next
+        // remote listing can move to the following object name.
+        list_marker.instance.push_back('~');
+        ldpp_dout(dpp, 1)
+            << "rgw_sync_recovery_copy_only: advancing stalled full-sync "
+            << "version marker source_zone=" << sc->source_zone
+            << " bucket=" << bs.bucket
+            << " key=" << list_marker.name
+            << " version_marker=" << list_marker.instance
+            << dendl;
       }
     } while (list_result.is_truncated && sync_result == 0);
     set_status("done iterating over all objects");
