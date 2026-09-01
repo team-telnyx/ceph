@@ -4598,6 +4598,13 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
     write_olh_epoch.reset();
   }
 
+  // BI entries for a null version use an empty instance even though remote
+  // listings identify the S3 version as the literal "null".
+  rgw_obj write_dest_obj = dest_obj;
+  if (force_fetch && write_dest_obj.key.instance == "null") {
+    write_dest_obj.key.instance.clear();
+  }
+
   // use an empty owner until we decode RGW_ATTR_ACL
   ACLOwner owner;
   RGWAccessControlPolicy policy;
@@ -4606,7 +4613,8 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   using namespace rgw::putobj;
   jspan_context no_trace{false, false};
   AtomicObjectProcessor processor(&aio, this, dest_bucket_info, nullptr,
-                                  owner, dest_obj_ctx, dest_obj, write_olh_epoch,
+                                  owner, dest_obj_ctx, write_dest_obj,
+                                  write_olh_epoch,
 				  tag, rctx.dpp, rctx.y, no_trace);
   processor.set_sync_debug_stage_observer(
       [&](const char *stage, int stage_ret, double duration_seconds) {
@@ -4983,7 +4991,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
 
     if (copy_if_newer && canceled) {
       ldpp_dout(rctx.dpp, 20) << "raced with another write of obj: " << fetched_obj << dendl;
-      dest_obj_ctx.invalidate(dest_obj); /* object was overwritten */
+      dest_obj_ctx.invalidate(write_dest_obj); /* object was overwritten */
       fetch_stage = "post_race_dest_state";
       ret = get_obj_state(rctx.dpp, &dest_obj_ctx, dest_bucket_info, stat_dest_obj, &dest_state, &manifest, stat_follow_olh, rctx.y);
       if (ret < 0) {
@@ -5027,7 +5035,7 @@ set_err_state:
                            << " olh_epoch=" << olh_epoch.value_or(0)
                            << " source_zone=" << source_zone
                            << " src_instance=" << src_obj.key.instance
-                           << " dest_instance=" << dest_obj.key.instance
+                           << " dest_instance=" << write_dest_obj.key.instance
                            << " stat_follow_olh=" << (int)stat_follow_olh
                            << " stat_dest_obj=" << stat_dest_obj
                            << dendl;
@@ -5038,7 +5046,7 @@ set_err_state:
                            << " olh_epoch=" << olh_epoch.value_or(0)
                            << " source_zone=" << source_zone
                            << " src_instance=" << src_obj.key.instance
-                           << " dest_instance=" << dest_obj.key.instance
+                           << " dest_instance=" << write_dest_obj.key.instance
                            << " stat_follow_olh=" << (int)stat_follow_olh
                            << " stat_dest_obj=" << stat_dest_obj
                            << dendl;
@@ -5049,7 +5057,7 @@ set_err_state:
     if (olh_epoch && *olh_epoch > 0) {
       constexpr bool log_data_change = true;
       fetch_stage = "set_olh_after_not_modified";
-      ret = set_olh(rctx.dpp, dest_obj_ctx, dest_bucket_info, dest_obj, false, nullptr,
+      ret = set_olh(rctx.dpp, dest_obj_ctx, dest_bucket_info, write_dest_obj, false, nullptr,
                     *olh_epoch, real_time(), false, rctx.y, zones_trace, log_data_change);
       if (ret < 0) {
         ldpp_dout(rctx.dpp, 0) << "ERROR: " << __func__ << " failed stage="
