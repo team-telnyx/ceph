@@ -4700,7 +4700,15 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   rgw_zone_set_entry dst_zone_trace(svc.zone->get_zone().id, dest_bucket_info.bucket.get_key());
   ceph::coarse_mono_time stage_start;
 
-  if (copy_if_newer) {
+  const bool force_fetch =
+    cct->_conf->rgw_sync_recovery_force_fetch &&
+    rgw::sync_observability::bucket_recovery_enabled(
+      cct, dest_bucket_info.bucket.name);
+
+  // Scoped recovery force-fetch intentionally ignores destination state. In
+  // particular, a missing destination object may return -ENOENT here instead
+  // of an empty RGWObjState, which would abort before the remote fetch.
+  if (copy_if_newer && !force_fetch) {
     /* need to get mtime for destination */
     fetch_stage = "dest_state";
     stage_start = ceph::coarse_mono_clock::now();
@@ -4726,10 +4734,6 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   for (int tries = 0; tries < NUM_ENPOINT_IOERROR_RETRIES; tries++) {
     fetch_stage = "remote_get_send";
     stage_start = ceph::coarse_mono_clock::now();
-    const bool force_fetch =
-      cct->_conf->rgw_sync_recovery_force_fetch &&
-      rgw::sync_observability::bucket_recovery_enabled(
-        cct, dest_bucket_info.bucket.name);
     rgw_zone_set_entry *trace_condition =
       force_fetch ? nullptr : &dst_zone_trace;
     const real_time *remote_mod = force_fetch ? nullptr : pmod;
