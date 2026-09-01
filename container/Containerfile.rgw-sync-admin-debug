@@ -1,0 +1,9 @@
+ARG BASE_IMAGE=quay.io/ceph/ceph:v20.2.1
+FROM ${BASE_IMAGE}
+
+ARG BUILD_DIR=build.rgw-sync
+
+# Keep the production RGW and shared libraries from the base image. The
+# recovery canary only needs the patched administrative sync process.
+COPY ${BUILD_DIR}/bin/radosgw-admin /usr/bin/radosgw-admin
+RUN chmod 0755 /usr/bin/radosgw-admin

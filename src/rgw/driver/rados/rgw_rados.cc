@@ -819,6 +819,16 @@ int RGWRados::get_max_chunk_size(const rgw_placement_rule& placement_rule, const
 				    const RGWBucketInfo& bucket_info,
 				    uint32_t shard_id, optional_yield y)
 {
+  CephContext* cct = dpp->get_cct();
+  if (cct->_conf->rgw_sync_recovery_skip_log_op &&
+      rgw::sync_observability::bucket_recovery_enabled(
+        cct, bucket_info.bucket.name)) {
+    ldpp_dout(dpp, 20) << "skipping scoped recovery data log entry"
+                       << " bucket=" << bucket_info.bucket
+                       << " shard_id=" << shard_id << dendl;
+    return 0;
+  }
+
   const auto& logs = bucket_info.layout.logs;
   if (logs.empty()) {
     return 0;
@@ -3264,6 +3274,12 @@ int RGWRados::Object::Write::_do_write_meta(uint64_t size, uint64_t accounted_si
     if (!meta.sync_debug_stage_observer) {
       return;
     }
+
+    if (ret < 0) {
+      ldpp_dout(rctx.dpp, 0) << "ERROR: sync write_meta stage=" << stage
+                             << " ret=" << ret
+                             << " object=" << target->get_obj() << dendl;
+    }
     const double duration = std::chrono::duration<double>(
         ceph::coarse_mono_clock::now() - start).count();
     meta.sync_debug_stage_observer(stage, ret, duration);
@@ -4567,6 +4583,19 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
                        ceph::coarse_mono_clock::now() - stage_start).count());
   };
 
+  const bool force_fetch =
+    cct->_conf->rgw_sync_recovery_force_fetch &&
+    rgw::sync_observability::object_force_fetch_enabled(
+      cct, dest_bucket_info.bucket.name, src_obj.key.name);
+
+  // BI entries for a null version use an empty instance even though remote
+  // listings identify the S3 version as the literal "null". Preserve the OLH
+  // epoch so the copied object is promoted to the current version.
+  rgw_obj write_dest_obj = dest_obj;
+  if (force_fetch && write_dest_obj.key.instance == "null") {
+    write_dest_obj.key.instance.clear();
+  }
+
   // use an empty owner until we decode RGW_ATTR_ACL
   ACLOwner owner;
   RGWAccessControlPolicy policy;
@@ -4575,7 +4604,8 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   using namespace rgw::putobj;
   jspan_context no_trace{false, false};
   AtomicObjectProcessor processor(&aio, this, dest_bucket_info, nullptr,
-                                  owner, dest_obj_ctx, dest_obj, olh_epoch,
+                                  owner, dest_obj_ctx, write_dest_obj,
+                                  olh_epoch,
 				  tag, rctx.dpp, rctx.y, no_trace);
   processor.set_sync_debug_stage_observer(
       [&](const char *stage, int stage_ret, double duration_seconds) {
@@ -4690,7 +4720,10 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   rgw_zone_set_entry dst_zone_trace(svc.zone->get_zone().id, dest_bucket_info.bucket.get_key());
   ceph::coarse_mono_time stage_start;
 
-  if (copy_if_newer) {
+  // Scoped recovery force-fetch intentionally ignores destination state. In
+  // particular, a missing destination object may return -ENOENT here instead
+  // of an empty RGWObjState, which would abort before the remote fetch.
+  if (copy_if_newer && !force_fetch) {
     /* need to get mtime for destination */
     fetch_stage = "dest_state";
     stage_start = ceph::coarse_mono_clock::now();
@@ -4716,7 +4749,6 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   for (int tries = 0; tries < NUM_ENPOINT_IOERROR_RETRIES; tries++) {
     fetch_stage = "remote_get_send";
     stage_start = ceph::coarse_mono_clock::now();
-    const bool force_fetch = cct->_conf->rgw_sync_recovery_force_fetch;
     rgw_zone_set_entry *trace_condition =
       force_fetch ? nullptr : &dst_zone_trace;
     const real_time *remote_mod = force_fetch ? nullptr : pmod;
@@ -4939,7 +4971,10 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
     ret = processor.complete(accounted_size, etag, mtime, set_mtime,
                              attrs, rgw::cksum::no_cksum, delete_at, nullptr, nullptr,
 			     nullptr, zones_trace, &canceled, rctx,
-			     rgw::sal::FLAG_LOG_OP);
+			     cct->_conf->rgw_sync_recovery_skip_log_op &&
+			       rgw::sync_observability::bucket_recovery_enabled(
+				 cct, dest_bucket_info.bucket.name) ? 0 :
+			       rgw::sal::FLAG_LOG_OP);
     emit_fetch_stage(fetch_stage, ret, stage_start);
     if (ret < 0) {
       goto set_err_state;
@@ -4947,7 +4982,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
 
     if (copy_if_newer && canceled) {
       ldpp_dout(rctx.dpp, 20) << "raced with another write of obj: " << fetched_obj << dendl;
-      dest_obj_ctx.invalidate(dest_obj); /* object was overwritten */
+      dest_obj_ctx.invalidate(write_dest_obj); /* object was overwritten */
       fetch_stage = "post_race_dest_state";
       ret = get_obj_state(rctx.dpp, &dest_obj_ctx, dest_bucket_info, stat_dest_obj, &dest_state, &manifest, stat_follow_olh, rctx.y);
       if (ret < 0) {
@@ -4991,7 +5026,7 @@ set_err_state:
                            << " olh_epoch=" << olh_epoch.value_or(0)
                            << " source_zone=" << source_zone
                            << " src_instance=" << src_obj.key.instance
-                           << " dest_instance=" << dest_obj.key.instance
+                           << " dest_instance=" << write_dest_obj.key.instance
                            << " stat_follow_olh=" << (int)stat_follow_olh
                            << " stat_dest_obj=" << stat_dest_obj
                            << dendl;
@@ -5002,7 +5037,7 @@ set_err_state:
                            << " olh_epoch=" << olh_epoch.value_or(0)
                            << " source_zone=" << source_zone
                            << " src_instance=" << src_obj.key.instance
-                           << " dest_instance=" << dest_obj.key.instance
+                           << " dest_instance=" << write_dest_obj.key.instance
                            << " stat_follow_olh=" << (int)stat_follow_olh
                            << " stat_dest_obj=" << stat_dest_obj
                            << dendl;
@@ -5013,7 +5048,7 @@ set_err_state:
     if (olh_epoch && *olh_epoch > 0) {
       constexpr bool log_data_change = true;
       fetch_stage = "set_olh_after_not_modified";
-      ret = set_olh(rctx.dpp, dest_obj_ctx, dest_bucket_info, dest_obj, false, nullptr,
+      ret = set_olh(rctx.dpp, dest_obj_ctx, dest_bucket_info, write_dest_obj, false, nullptr,
                     *olh_epoch, real_time(), false, rctx.y, zones_trace, log_data_change);
       if (ret < 0) {
         ldpp_dout(rctx.dpp, 0) << "ERROR: " << __func__ << " failed stage="

@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
@@ -107,13 +108,12 @@ std::string short_bucket_id(std::string_view bucket_id)
   return std::string{bucket_id.substr(0, std::min<std::size_t>(bucket_id.size(), 8))};
 }
 
-bool bucket_allowlisted(CephContext *cct, std::string_view bucket)
+bool bucket_allowlisted(std::string_view allowlist, std::string_view bucket)
 {
-  if (!cct || bucket.empty()) {
+  if (bucket.empty()) {
     return false;
   }
 
-  const auto allowlist = cct->_conf->rgw_sync_debug_bucket_allowlist;
   std::size_t pos = 0;
   while (pos < allowlist.size()) {
     const auto comma = allowlist.find(',', pos);
@@ -182,7 +182,28 @@ bool enabled(CephContext *cct)
 
 bool bucket_debug_enabled(CephContext *cct, std::string_view bucket)
 {
-  return enabled(cct) && bucket_allowlisted(cct, bucket);
+  return enabled(cct) &&
+         bucket_allowlisted(cct->_conf->rgw_sync_debug_bucket_allowlist,
+                            bucket);
+}
+
+bool bucket_recovery_enabled(CephContext *cct, std::string_view bucket)
+{
+  return cct &&
+         bucket_allowlisted(cct->_conf->rgw_sync_recovery_bucket_allowlist,
+                            bucket);
+}
+
+bool object_force_fetch_enabled(CephContext *cct, std::string_view bucket,
+                                std::string_view object)
+{
+  if (!bucket_recovery_enabled(cct, bucket)) {
+    return false;
+  }
+
+  const char *allowlist = std::getenv("RGW_SYNC_RECOVERY_OBJECT_ALLOWLIST");
+  return !allowlist || *allowlist == '\0' ||
+         bucket_allowlisted(allowlist, object);
 }
 
 std::string result_label(int ret)
@@ -295,7 +316,7 @@ void add_bucket(Event *event, const rgw_bucket_shard& bs)
 
 void add_debug_bucket(Event *event, CephContext *cct, const rgw_bucket_shard& bs)
 {
-  if (!event || !bucket_allowlisted(cct, bs.bucket.name)) {
+  if (!event || !bucket_debug_enabled(cct, bs.bucket.name)) {
     return;
   }
 
