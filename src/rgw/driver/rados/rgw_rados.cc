@@ -4587,7 +4587,8 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   // fails with -ENOENT after the payload fetch. Recover the current null
   // version as a normal write; copy-only continues to skip historical deletes.
   auto write_olh_epoch = olh_epoch;
-  if (force_fetch && src_obj.key.instance.empty()) {
+  if (force_fetch &&
+      (src_obj.key.instance.empty() || src_obj.key.instance == "null")) {
     write_olh_epoch.reset();
   }
 
