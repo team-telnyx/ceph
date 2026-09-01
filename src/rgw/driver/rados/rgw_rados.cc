@@ -4577,6 +4577,20 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
                        ceph::coarse_mono_clock::now() - stage_start).count());
   };
 
+  const bool force_fetch =
+    cct->_conf->rgw_sync_recovery_force_fetch &&
+    rgw::sync_observability::bucket_recovery_enabled(
+      cct, dest_bucket_info.bucket.name);
+
+  // A versioning-suspended bucket can expose a current "null" version with
+  // an OLH epoch. If the destination has no OLH yet, replaying that epoch
+  // fails with -ENOENT after the payload fetch. Recover the current null
+  // version as a normal write; copy-only continues to skip historical deletes.
+  auto write_olh_epoch = olh_epoch;
+  if (force_fetch && src_obj.key.instance.empty()) {
+    write_olh_epoch.reset();
+  }
+
   // use an empty owner until we decode RGW_ATTR_ACL
   ACLOwner owner;
   RGWAccessControlPolicy policy;
@@ -4585,7 +4599,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   using namespace rgw::putobj;
   jspan_context no_trace{false, false};
   AtomicObjectProcessor processor(&aio, this, dest_bucket_info, nullptr,
-                                  owner, dest_obj_ctx, dest_obj, olh_epoch,
+                                  owner, dest_obj_ctx, dest_obj, write_olh_epoch,
 				  tag, rctx.dpp, rctx.y, no_trace);
   processor.set_sync_debug_stage_observer(
       [&](const char *stage, int stage_ret, double duration_seconds) {
@@ -4699,11 +4713,6 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   obj_time_weight dest_mtime_weight;
   rgw_zone_set_entry dst_zone_trace(svc.zone->get_zone().id, dest_bucket_info.bucket.get_key());
   ceph::coarse_mono_time stage_start;
-
-  const bool force_fetch =
-    cct->_conf->rgw_sync_recovery_force_fetch &&
-    rgw::sync_observability::bucket_recovery_enabled(
-      cct, dest_bucket_info.bucket.name);
 
   // Scoped recovery force-fetch intentionally ignores destination state. In
   // particular, a missing destination object may return -ENOENT here instead
