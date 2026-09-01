@@ -2764,6 +2764,23 @@ options:
   - rgw
   see_also:
   - rgw_sync_debug_observability
+  - rgw_sync_recovery_bucket_allowlist
+  with_legacy: true
+- name: rgw_sync_recovery_bucket_allowlist
+  type: str
+  level: dev
+  desc: Comma-separated bucket names eligible for RGW sync recovery behavior.
+  long_desc: Recovery force-fetch and copy-only behavior applies only to
+    buckets in this allowlist. Leave this empty for normal operation. Use *
+    only for a bounded one-shot recovery process, never on a background sync
+    RGW. This guard prevents recovery settings from changing delete or fetch
+    semantics for unrelated customer buckets.
+  default: '""'
+  services:
+  - rgw
+  see_also:
+  - rgw_sync_recovery_force_fetch
+  - rgw_sync_recovery_copy_only
   with_legacy: true
 - name: rgw_sync_recovery_copy_only
   type: bool
@@ -2779,6 +2796,7 @@ options:
   - rgw
   see_also:
   - rgw_sync_recovery_force_fetch
+  - rgw_sync_recovery_bucket_allowlist
   with_legacy: true
 - name: rgw_period_push_interval
   type: float

@@ -4716,7 +4716,10 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   for (int tries = 0; tries < NUM_ENPOINT_IOERROR_RETRIES; tries++) {
     fetch_stage = "remote_get_send";
     stage_start = ceph::coarse_mono_clock::now();
-    const bool force_fetch = cct->_conf->rgw_sync_recovery_force_fetch;
+    const bool force_fetch =
+      cct->_conf->rgw_sync_recovery_force_fetch &&
+      rgw::sync_observability::bucket_recovery_enabled(
+        cct, dest_bucket_info.bucket.name);
     rgw_zone_set_entry *trace_condition =
       force_fetch ? nullptr : &dst_zone_trace;
     const real_time *remote_mod = force_fetch ? nullptr : pmod;

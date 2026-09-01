@@ -4849,7 +4849,9 @@ public:
 	      pretty_print(sc->env, "Deleting object s3://{}/{} in sync from zone {}\n",
 			   bs.bucket.name, key, zone_name);
 	    }
-            if (cct->_conf->rgw_sync_recovery_copy_only) {
+            if (cct->_conf->rgw_sync_recovery_copy_only &&
+                rgw::sync_observability::bucket_recovery_enabled(
+                  cct, bs.bucket.name)) {
               set_status("skipping delete in copy-only sync recovery");
               tn->log(0, SSTR("rgw_sync_recovery_copy_only: skipping delete for "
                                << sc->source_zone << "/" << bs.bucket << "/" << key
@@ -4872,7 +4874,9 @@ public:
           } else if (op == CLS_RGW_OP_LINK_OLH_DM) {
             set_status("creating delete marker");
             tn->log(10, SSTR("creating delete marker: obj: " << sc->source_zone << "/" << bs.bucket << "/" << key << "[" << versioned_epoch.value_or(0) << "]"));
-            if (cct->_conf->rgw_sync_recovery_copy_only) {
+            if (cct->_conf->rgw_sync_recovery_copy_only &&
+                rgw::sync_observability::bucket_recovery_enabled(
+                  cct, bs.bucket.name)) {
               set_status("skipping delete marker in copy-only sync recovery");
               tn->log(0, SSTR("rgw_sync_recovery_copy_only: skipping delete marker for "
                                << sc->source_zone << "/" << bs.bucket << "/" << key
@@ -5072,7 +5076,9 @@ public:
   {
     zones_trace.insert(sc->source_zone.id, sync_pipe.info.dest_bucket.get_key());
     prefix_handler.set_rules(sync_pipe.get_rules());
-    prefix_handler.set_force_all_prefixes(cct->_conf->rgw_sync_recovery_force_fetch);
+    prefix_handler.set_force_all_prefixes(
+      cct->_conf->rgw_sync_recovery_force_fetch &&
+      rgw::sync_observability::bucket_recovery_enabled(cct, bs.bucket.name));
   }
 
   int operate(const DoutPrefixProvider *dpp) override;
