@@ -4588,18 +4588,9 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
     rgw::sync_observability::bucket_recovery_enabled(
       cct, dest_bucket_info.bucket.name);
 
-  // A versioning-suspended bucket can expose a current "null" version with
-  // an OLH epoch. If the destination has no OLH yet, replaying that epoch
-  // fails with -ENOENT after the payload fetch. Recover the current null
-  // version as a normal write; copy-only continues to skip historical deletes.
-  auto write_olh_epoch = olh_epoch;
-  if (force_fetch &&
-      (src_obj.key.instance.empty() || src_obj.key.instance == "null")) {
-    write_olh_epoch.reset();
-  }
-
   // BI entries for a null version use an empty instance even though remote
-  // listings identify the S3 version as the literal "null".
+  // listings identify the S3 version as the literal "null". Preserve the OLH
+  // epoch so the copied object is promoted to the current version.
   rgw_obj write_dest_obj = dest_obj;
   if (force_fetch && write_dest_obj.key.instance == "null") {
     write_dest_obj.key.instance.clear();
@@ -4614,7 +4605,7 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
   jspan_context no_trace{false, false};
   AtomicObjectProcessor processor(&aio, this, dest_bucket_info, nullptr,
                                   owner, dest_obj_ctx, write_dest_obj,
-                                  write_olh_epoch,
+                                  olh_epoch,
 				  tag, rctx.dpp, rctx.y, no_trace);
   processor.set_sync_debug_stage_observer(
       [&](const char *stage, int stage_ret, double duration_seconds) {
