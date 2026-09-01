@@ -3274,6 +3274,12 @@ int RGWRados::Object::Write::_do_write_meta(uint64_t size, uint64_t accounted_si
     if (!meta.sync_debug_stage_observer) {
       return;
     }
+
+    if (ret < 0) {
+      ldpp_dout(rctx.dpp, 0) << "ERROR: sync write_meta stage=" << stage
+                             << " ret=" << ret
+                             << " object=" << target->get_obj() << dendl;
+    }
     const double duration = std::chrono::duration<double>(
         ceph::coarse_mono_clock::now() - start).count();
     meta.sync_debug_stage_observer(stage, ret, duration);
