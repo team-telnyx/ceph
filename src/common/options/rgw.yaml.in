@@ -2783,22 +2783,6 @@ options:
   - rgw_sync_recovery_copy_only
   - rgw_sync_recovery_skip_log_op
   with_legacy: true
-- name: rgw_sync_recovery_object_allowlist
-  type: str
-  level: dev
-  desc: Comma-separated object keys eligible for force-fetch recovery.
-  long_desc: When non-empty, rgw_sync_recovery_force_fetch bypasses destination
-    preflight only for exact object keys in this allowlist. The containing
-    bucket must also be present in rgw_sync_recovery_bucket_allowlist. Leave
-    this empty to retain bucket-wide force-fetch behavior. Use only for bounded
-    one-shot recovery processes.
-  default: '""'
-  services:
-  - rgw
-  see_also:
-  - rgw_sync_recovery_force_fetch
-  - rgw_sync_recovery_bucket_allowlist
-  with_legacy: true
 - name: rgw_sync_recovery_skip_log_op
   type: bool
   level: dev

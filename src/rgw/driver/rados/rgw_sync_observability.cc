@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
@@ -200,8 +201,9 @@ bool object_force_fetch_enabled(CephContext *cct, std::string_view bucket,
     return false;
   }
 
-  const auto& allowlist = cct->_conf->rgw_sync_recovery_object_allowlist;
-  return allowlist.empty() || bucket_allowlisted(allowlist, object);
+  const char *allowlist = std::getenv("RGW_SYNC_RECOVERY_OBJECT_ALLOWLIST");
+  return !allowlist || *allowlist == '\0' ||
+         bucket_allowlisted(allowlist, object);
 }
 
 std::string result_label(int ret)
