@@ -4942,7 +4942,10 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
     ret = processor.complete(accounted_size, etag, mtime, set_mtime,
                              attrs, rgw::cksum::no_cksum, delete_at, nullptr, nullptr,
 			     nullptr, zones_trace, &canceled, rctx,
-			     rgw::sal::FLAG_LOG_OP);
+			     cct->_conf->rgw_sync_recovery_skip_log_op &&
+			       rgw::sync_observability::bucket_recovery_enabled(
+				 cct, dest_bucket_info.bucket.name) ? 0 :
+			       rgw::sal::FLAG_LOG_OP);
     emit_fetch_stage(fetch_stage, ret, stage_start);
     if (ret < 0) {
       goto set_err_state;
