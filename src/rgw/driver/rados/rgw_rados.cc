@@ -4585,8 +4585,8 @@ int RGWRados::fetch_remote_obj(RGWObjectCtx& dest_obj_ctx,
 
   const bool force_fetch =
     cct->_conf->rgw_sync_recovery_force_fetch &&
-    rgw::sync_observability::bucket_recovery_enabled(
-      cct, dest_bucket_info.bucket.name);
+    rgw::sync_observability::object_force_fetch_enabled(
+      cct, dest_bucket_info.bucket.name, src_obj.key.name);
 
   // BI entries for a null version use an empty instance even though remote
   // listings identify the S3 version as the literal "null". Preserve the OLH

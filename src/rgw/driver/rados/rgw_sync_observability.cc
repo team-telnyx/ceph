@@ -193,6 +193,17 @@ bool bucket_recovery_enabled(CephContext *cct, std::string_view bucket)
                             bucket);
 }
 
+bool object_force_fetch_enabled(CephContext *cct, std::string_view bucket,
+                                std::string_view object)
+{
+  if (!bucket_recovery_enabled(cct, bucket)) {
+    return false;
+  }
+
+  const auto& allowlist = cct->_conf->rgw_sync_recovery_object_allowlist;
+  return allowlist.empty() || bucket_allowlisted(allowlist, object);
+}
+
 std::string result_label(int ret)
 {
   if (ret == 0) {

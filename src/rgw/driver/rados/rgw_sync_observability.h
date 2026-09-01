@@ -57,6 +57,8 @@ struct Event {
 bool enabled(CephContext *cct);
 bool bucket_debug_enabled(CephContext *cct, std::string_view bucket);
 bool bucket_recovery_enabled(CephContext *cct, std::string_view bucket);
+bool object_force_fetch_enabled(CephContext *cct, std::string_view bucket,
+                                std::string_view object);
 std::string result_label(int ret);
 std::string error_label(int ret);
 std::string reason_label(int ret);
