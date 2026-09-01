@@ -819,6 +819,16 @@ int RGWRados::get_max_chunk_size(const rgw_placement_rule& placement_rule, const
 				    const RGWBucketInfo& bucket_info,
 				    uint32_t shard_id, optional_yield y)
 {
+  CephContext* cct = dpp->get_cct();
+  if (cct->_conf->rgw_sync_recovery_skip_log_op &&
+      rgw::sync_observability::bucket_recovery_enabled(
+        cct, bucket_info.bucket.name)) {
+    ldpp_dout(dpp, 20) << "skipping scoped recovery data log entry"
+                       << " bucket=" << bucket_info.bucket
+                       << " shard_id=" << shard_id << dendl;
+    return 0;
+  }
+
   const auto& logs = bucket_info.layout.logs;
   if (logs.empty()) {
     return 0;
