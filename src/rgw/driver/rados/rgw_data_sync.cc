@@ -942,13 +942,17 @@ class RGWReadRemoteBucketIndexLogInfoCR : public RGWCoroutine {
   const string instance_key;
 
   rgw_bucket_index_marker_info *info;
+  bool *deleted;
+  bucket_instance_meta_info meta_info;
+  int bilog_ret = 0;
 
 public:
   RGWReadRemoteBucketIndexLogInfoCR(RGWDataSyncCtx *_sc,
 				    const rgw_bucket& bucket,
-				    rgw_bucket_index_marker_info *_info)
+				    rgw_bucket_index_marker_info *_info,
+				    bool *_deleted = nullptr)
     : RGWCoroutine(_sc->cct), sc(_sc), sync_env(_sc->env),
-      instance_key(bucket.get_key()), info(_info) {}
+      instance_key(bucket.get_key()), info(_info), deleted(_deleted) {}
 
   int operate(const DoutPrefixProvider *dpp) override {
     reenter(this) {
@@ -961,6 +965,37 @@ public:
         string p = "/admin/log/";
         call(new RGWReadRESTResourceCR<rgw_bucket_index_marker_info>(sync_env->cct, sc->conn, sync_env->http_manager, p, pairs, info));
       }
+
+      // The full-sync index can retain an old bucket incarnation after that
+      // incarnation is deleted. Some source RGWs return HTTP 500 for its
+      // missing bilog instead of ENOENT, causing the retry entry to live
+      // forever. Only translate this error after the source's exact
+      // bucket.instance metadata proves that incarnation is deleted.
+      if (retcode == -ERR_INTERNAL_ERROR) {
+        bilog_ret = retcode;
+        yield {
+          rgw_http_param_pair pairs[] = {{"key", instance_key.c_str()},
+                                         {NULL, NULL}};
+
+          call(new RGWReadRESTResourceCR<bucket_instance_meta_info>(
+              sync_env->cct, sc->conn, sync_env->http_manager,
+              "/admin/metadata/bucket.instance", pairs, &meta_info));
+        }
+        if (retcode == 0 &&
+            meta_info.data.get_bucket_info().bucket_deleted()) {
+          ldpp_dout(dpp, 0)
+              << "remote bucket instance is marked deleted; skipping its "
+                 "missing bilog: "
+              << instance_key << dendl;
+          if (deleted) {
+            *deleted = true;
+            return set_cr_done();
+          }
+          return set_cr_error(-ENOENT);
+        }
+        retcode = bilog_ret;
+      }
+
       if (retcode < 0) {
         return set_cr_error(retcode);
       }
@@ -1049,6 +1084,11 @@ public:
 	    ldpp_dout(dpp, 0) << "ERROR: failed to fetch metadata for key: "
 			      << key << dendl;
 	    return set_cr_error(retcode);
+	  }
+	  if (meta_info.data.get_bucket_info().bucket_deleted()) {
+	    ldpp_dout(dpp, 10) << "skipping deleted bucket instance: "
+			       << key << dendl;
+	    continue;
 	  }
 	  // Now that bucket full sync is bucket-wide instead of
 	  // per-shard, we only need to register a single shard of
@@ -1530,10 +1570,11 @@ public:
       }
       sync_status = retcode;
 
-      if (sync_status == -ENOENT) {
+      if (sync_status == -ENOENT || sync_status == -ERR_NO_SUCH_BUCKET) {
         // this was added when 'tenant/' was added to datalog entries, because
         // preexisting tenant buckets could never sync and would stay in the
-        // error_repo forever
+        // error_repo forever. Remote RGW bucket lookups can represent the same
+        // missing-bucket condition as the S3 NoSuchBucket error.
         tn->log(0, SSTR("WARNING: skipping data log entry for missing bucket " << complete->bs));
         sync_status = 0;
       }
@@ -1738,6 +1779,7 @@ class RGWDataFullSyncSingleEntryCR : public RGWCoroutine {
   bool first_shard = true;
   bool error_inject;
   bool remote_started = false;
+  bool remote_deleted = false;
   ceph::coarse_mono_time remote_start;
 
 public:
@@ -1764,7 +1806,8 @@ public:
         tn->log(0, SSTR("read bilog info key=" << key));
         remote_started = true;
         remote_start = ceph::coarse_mono_clock::now();
-        yield call(new RGWReadRemoteBucketIndexLogInfoCR(sc, source_bs.bucket, &remote_info));
+        yield call(new RGWReadRemoteBucketIndexLogInfoCR(
+            sc, source_bs.bucket, &remote_info, &remote_deleted));
       }
       {
         rgw::sync_observability::Event event;
@@ -1782,6 +1825,16 @@ public:
           data_shard_for_bucket(sc, source_bs));
         rgw::sync_observability::add_debug_bucket(&event, cct, source_bs);
         rgw::sync_observability::emit(dpp, sc, std::move(event));
+      }
+
+      if (remote_deleted) {
+        tn->log(10, SSTR("full sync: bucket instance is marked deleted on "
+                         "source; skipping " << source_bs.bucket));
+        yield call(marker_tracker->finish(key));
+        if (retcode < 0) {
+          return set_cr_error(retcode);
+        }
+        return set_cr_done();
       }
 
       if (retcode < 0) {
@@ -4225,6 +4278,7 @@ class RGWListRemoteBucketCR: public RGWCoroutine {
   RGWDataSyncEnv *sync_env;
   const rgw_bucket_shard& bs;
   rgw_obj_key marker_position;
+  ceph::coarse_mono_time remote_start;
 
   bucket_list_result *result;
 
@@ -4244,7 +4298,32 @@ public:
 					{ "version-id-marker" , marker_position.instance.c_str() },
 	                                { NULL, NULL } };
         string p = string("/") + bs.bucket.get_key(':', 0);
+        remote_start = ceph::coarse_mono_clock::now();
         call(new RGWReadRESTResourceCR<bucket_list_result>(sync_env->cct, sc->conn, sync_env->http_manager, p, pairs, result));
+      }
+      {
+        rgw::sync_observability::Event event;
+        event.metric = "remote_requests";
+        event.sync_type = "full";
+        event.phase = "bucket_list";
+        event.remote_op = "bucket_list";
+        event.operation = "bucket_list";
+        event.result = rgw::sync_observability::result_label(retcode);
+        event.error = rgw::sync_observability::error_label(retcode);
+        event.duration_seconds = std::chrono::duration<double>(
+          ceph::coarse_mono_clock::now() - remote_start).count();
+        if (retcode < 0) {
+          event.op_state = "error";
+          event.failure_stage = "source_bucket_list";
+          event.reason = rgw::sync_observability::reason_label(retcode);
+        } else {
+          event.op_state = result->is_truncated ? "truncated" : "complete";
+          event.value = result->entries.size();
+        }
+        rgw::sync_observability::add_data_shard(&event,
+          data_shard_for_bucket(sc, bs));
+        rgw::sync_observability::add_debug_bucket(&event, cct, bs);
+        rgw::sync_observability::emit(dpp, sc, std::move(event));
       }
       if (retcode < 0) {
         return set_cr_error(retcode);

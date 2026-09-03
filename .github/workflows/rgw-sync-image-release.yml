@@ -1,0 +1,57 @@
+name: RGW sync image release tooling
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/rgw-sync-image-release.yml
+      - container/README.rgw-sync-image-release.md
+      - container/release-rgw-sync-debug.sh
+      - container/rgw-sync-image-release.sh
+  push:
+    paths:
+      - .github/workflows/rgw-sync-image-release.yml
+      - container/README.rgw-sync-image-release.md
+      - container/release-rgw-sync-debug.sh
+      - container/rgw-sync-image-release.sh
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
+        with:
+          fetch-depth: 2
+
+      - name: Validate shell scripts
+        run: |
+          bash -n \
+            container/release-rgw-sync-debug.sh \
+            container/rgw-sync-image-release.sh
+          shellcheck \
+            container/release-rgw-sync-debug.sh \
+            container/rgw-sync-image-release.sh
+
+      - name: Render an image changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          short_sha=${GITHUB_SHA:0:12}
+          container/rgw-sync-image-release.sh publish \
+            --image "example.invalid/ceph-rgw-custom:test-${short_sha}" \
+            --digest "sha256:0000000000000000000000000000000000000000000000000000000000000000" \
+            --commit HEAD \
+            --previous-commit HEAD^ \
+            --dry-run | tee /tmp/changelog.md
+          grep -F 'Validation History' /tmp/changelog.md
+          grep -F 'Improved sync: **pending**' /tmp/changelog.md
+
+      - name: Render the coupled build and publish commands
+        run: |
+          container/release-rgw-sync-debug.sh \
+            --tag "test-${GITHUB_SHA:0:12}" \
+            --dry-run | tee /tmp/release-commands.txt
+          grep -F 'docker push' /tmp/release-commands.txt
+          grep -F 'rgw-sync-image-release.sh publish' /tmp/release-commands.txt

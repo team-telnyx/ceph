@@ -23,6 +23,7 @@ DEFAULT_LABELS = (
 DEBUG_LABELS = ("bucket", "bucket_id", "data_shard", "bucket_shard", "shard")
 REMOTE_LABELS = DEFAULT_LABELS + ("remote_op",)
 REMOTE_FAILURE_LABELS = REMOTE_LABELS + ("failure_stage", "reason")
+BUCKET_LIST_LABELS = REMOTE_LABELS + ("op_state",)
 FAILURE_LABELS = DEFAULT_LABELS + ("operation", "op_state", "failure_stage", "reason")
 ERROR_LABELS = FAILURE_LABELS + DEBUG_LABELS
 BILOG_ERROR_LABELS = DEFAULT_LABELS + DEBUG_LABELS + (
@@ -169,6 +170,12 @@ class Metrics:
                         failure_labels,
                         now,
                     )
+                if event.get("phase") == "bucket_list":
+                    page_labels = labels_for(event, BUCKET_LIST_LABELS)
+                    self.inc("rgw_sync_bucket_list_pages_total", page_labels)
+                    if value is not None:
+                        self.inc("rgw_sync_bucket_list_entries_total", page_labels, value)
+                        self.set_gauge("rgw_sync_bucket_list_page_entries", page_labels, value)
             elif metric == "retries":
                 self.inc("rgw_sync_retries_total", labels_for(event, DEFAULT_LABELS))
             elif metric == "errors":
@@ -322,6 +329,22 @@ def run_self_test():
     })
     metrics.handle({
         **base,
+        "metric": "remote_requests",
+        "phase": "bucket_list",
+        "result": "success",
+        "error": "none",
+        "remote_op": "bucket_list",
+        "op_state": "truncated",
+        "bucket": "example",
+        "bucket_id": "abcd1234",
+        "data_shard": "68",
+        "bucket_shard": "7",
+        "shard": "7",
+        "duration_seconds": 0.25,
+        "value": 1000,
+    })
+    metrics.handle({
+        **base,
         "metric": "lease",
         "phase": "lease",
         "result": "retry",
@@ -384,6 +407,9 @@ def run_self_test():
         "rgw_sync_bilog_error_last_seen_timestamp_seconds",
         'rgw_sync_remote_request_failures_total{realm="r",zonegroup="zg",source_zone="src",dest_zone="dst",sync_type="incremental",phase="object_fetch",result="retry",error="ebusy",remote_op="object_fetch",failure_stage="remote_fetch_or_local_put",reason="retryable",data_shard="68"} 1.0',
         "rgw_sync_remote_request_last_failure_timestamp_seconds",
+        'rgw_sync_bucket_list_pages_total{realm="r",zonegroup="zg",source_zone="src",dest_zone="dst",sync_type="incremental",phase="bucket_list",result="success",error="none",remote_op="bucket_list",op_state="truncated",bucket="example",bucket_id="abcd1234",data_shard="68",bucket_shard="7",shard="7"} 1.0',
+        'rgw_sync_bucket_list_entries_total{realm="r",zonegroup="zg",source_zone="src",dest_zone="dst",sync_type="incremental",phase="bucket_list",result="success",error="none",remote_op="bucket_list",op_state="truncated",bucket="example",bucket_id="abcd1234",data_shard="68",bucket_shard="7",shard="7"} 1000.0',
+        'rgw_sync_bucket_list_page_entries{realm="r",zonegroup="zg",source_zone="src",dest_zone="dst",sync_type="incremental",phase="bucket_list",result="success",error="none",remote_op="bucket_list",op_state="truncated",bucket="example",bucket_id="abcd1234",data_shard="68",bucket_shard="7",shard="7"} 1000.0',
         'rgw_sync_lease_last_failure_timestamp_seconds{realm="r",zonegroup="zg",source_zone="src",dest_zone="dst",result="retry",error="ebusy",data_shard="68",shard="68"}',
         'rgw_sync_shard_marker_lag_seconds{realm="r",zonegroup="zg",source_zone="src",dest_zone="dst",sync_type="incremental",data_shard="68",shard="68"} 120.0',
         'rgw_sync_endpoint_availability_events_total{remote_id="mn1-zone-id",endpoint_event="no_usable_endpoint",reason="all_endpoints_unconnectable",result="error",error="errno_22",endpoint_hash="all",endpoint_count="1"} 1.0',
