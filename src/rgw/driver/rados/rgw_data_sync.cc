@@ -1570,10 +1570,11 @@ public:
       }
       sync_status = retcode;
 
-      if (sync_status == -ENOENT) {
+      if (sync_status == -ENOENT || sync_status == -ERR_NO_SUCH_BUCKET) {
         // this was added when 'tenant/' was added to datalog entries, because
         // preexisting tenant buckets could never sync and would stay in the
-        // error_repo forever
+        // error_repo forever. Remote RGW bucket lookups can represent the same
+        // missing-bucket condition as the S3 NoSuchBucket error.
         tn->log(0, SSTR("WARNING: skipping data log entry for missing bucket " << complete->bs));
         sync_status = 0;
       }
