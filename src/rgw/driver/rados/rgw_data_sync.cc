@@ -4278,6 +4278,7 @@ class RGWListRemoteBucketCR: public RGWCoroutine {
   RGWDataSyncEnv *sync_env;
   const rgw_bucket_shard& bs;
   rgw_obj_key marker_position;
+  ceph::coarse_mono_time remote_start;
 
   bucket_list_result *result;
 
@@ -4297,7 +4298,32 @@ public:
 					{ "version-id-marker" , marker_position.instance.c_str() },
 	                                { NULL, NULL } };
         string p = string("/") + bs.bucket.get_key(':', 0);
+        remote_start = ceph::coarse_mono_clock::now();
         call(new RGWReadRESTResourceCR<bucket_list_result>(sync_env->cct, sc->conn, sync_env->http_manager, p, pairs, result));
+      }
+      {
+        rgw::sync_observability::Event event;
+        event.metric = "remote_requests";
+        event.sync_type = "full";
+        event.phase = "bucket_list";
+        event.remote_op = "bucket_list";
+        event.operation = "bucket_list";
+        event.result = rgw::sync_observability::result_label(retcode);
+        event.error = rgw::sync_observability::error_label(retcode);
+        event.duration_seconds = std::chrono::duration<double>(
+          ceph::coarse_mono_clock::now() - remote_start).count();
+        if (retcode < 0) {
+          event.op_state = "error";
+          event.failure_stage = "source_bucket_list";
+          event.reason = rgw::sync_observability::reason_label(retcode);
+        } else {
+          event.op_state = result->is_truncated ? "truncated" : "complete";
+          event.value = result->entries.size();
+        }
+        rgw::sync_observability::add_data_shard(&event,
+          data_shard_for_bucket(sc, bs));
+        rgw::sync_observability::add_debug_bucket(&event, cct, bs);
+        rgw::sync_observability::emit(dpp, sc, std::move(event));
       }
       if (retcode < 0) {
         return set_cr_error(retcode);
