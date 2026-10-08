@@ -1,0 +1,19 @@
+# Official Ceph 20.2.4 plus ceph/ceph PR 72033 (tracker 80440): cephadm no
+# longer rotates an OSD's keyring when only the caps differ, and the mgr checks
+# ok-to-stop before an OSD reconfig/redeploy it scheduled itself.
+#
+# COPY-only layer: no RUN, so every Ceph daemon binary stays byte-identical to
+# the base image. Build it with container/build-cephadm-keyring-fix.sh, which
+# stages the context (the rebuilt cephadm zipapp and the patched mgr files).
+ARG BASE_IMAGE=quay.io/ceph/ceph@sha256:6bb1c8a42fbc0bf87938946990b65174466997bc11c31eb5a323225a779fd8f9
+FROM ${BASE_IMAGE}
+
+ARG SOURCE_COMMIT=unknown
+LABEL org.opencontainers.image.source="https://github.com/team-telnyx/ceph" \
+      org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+      org.opencontainers.image.base.name="quay.io/ceph/ceph@sha256:6bb1c8a42fbc0bf87938946990b65174466997bc11c31eb5a323225a779fd8f9" \
+      org.opencontainers.image.description="ceph 20.2.4 + ceph/ceph PR 72033 (cephadm OSD keyring caps-only fix)"
+
+COPY --chmod=0755 cephadm /usr/sbin/cephadm
+COPY --chmod=0644 serve.py /usr/share/ceph/mgr/cephadm/serve.py
+COPY --chmod=0644 test_cephadm.py /usr/share/ceph/mgr/cephadm/tests/test_cephadm.py
